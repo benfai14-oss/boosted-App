@@ -133,7 +133,13 @@ class MarketClient:
         daily = daily.copy()
         daily["log_ret"] = np.log(daily["Close"]).diff()
         # rolling 30‑day vol (std of log returns)
-        daily["vol_30"] = daily["log_ret"].rolling(window=30, min_periods=1).std(ddof=0) * np.sqrt(252)
+        daily["vol_30"] = (
+        daily["log_ret"]
+        .fillna(0)                # remplace la première valeur NaN par 0
+        .rolling(window=30, min_periods=1)
+        .std(ddof=0) * np.sqrt(252)
+)
+
         # Resample to weekly (Monday start)
         weekly = daily.resample("W-MON").agg({
             "Close": "last",    # end‑of‑week price
