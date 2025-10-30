@@ -1,0 +1,253 @@
+"""
+Test harness for Layer C (Market Impact & Forecasting).
+
+This script:
+  1) Generates synthetic weekly inputs (prices + global risk) if none exist.
+  2) Runs Layer C end-to-end in two modes:
+       - legacy  (lags engineered in prep)
+       - auto    (ARIMAX extended: auto features + seasonality)
+  3) Runs extra forecast scenarios by altering the future risk path:
+       - base      : flat risk path at last observed level
+       - stress_up : +20% relative increase in risk
+       - stress_dn : -20% relative decrease in risk
+  4) Writes results (CSV) and a PNG plot for visual inspection.
+
+Outputs (relative to project root):
+  data/tmp/tmp_prices.csv
+  data/tmp/tmp_risk.csv
+  data/gold/<commodity>_forecast_*.csv
+  reports/<commodity>_layerC_forecast_*.png
+
+Usage (from project root):
+  python -m scripts.test_layer_c --commodity wheat --mode auto --p 2 --q 2 --horizons 30 60 90
+  python -m scripts.test_layer_c --commodity wheat --mode legacy --lags 2 --horizons 30 60 90
+"""
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import List, Tuple, Dict, Any
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from market_models.prep import merge_price_and_risk
+from market_models.arimax import fit_arimax, forecast_arimax
+from market_models.train import train_and_forecast
+
+# --------------------------------------------------------------------------------------
+# Utilities
+# --------------------------------------------------------------------------------------
+
+PROJ_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJ_ROOT / "data"
+TMP_DIR = DATA_DIR / "tmp"
+GOLD_DIR = DATA_DIR / "gold"
+REPORTS_DIR = PROJ_ROOT / "reports"
+
+for d in (TMP_DIR, GOLD_DIR, REPORTS_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+
+def gen_synthetic_inputs(out_prices: Path, out_risk: Path, n_weeks: int = 40, seed: int = 42) -> Tuple[Path, Path]:
+    """Generate simple weekly synthetic series for price and risk.
+
+    Prices: noisy random walk around ~200.
+    Risk  : smooth sinusoidal pattern (0..100) + noise.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2023-01-01", periods=n_weeks, freq="W")
+
+    spot = 200.0 + np.cumsum(rng.normal(0.0, 1.1, size=n_weeks))
+    front = spot + rng.normal(2.0, 0.8, size=n_weeks)
+    price = pd.DataFrame({"date": dates, "price_front_fut": front})
+
+    phase = np.linspace(0, 2 * np.pi, n_weeks)
+    risk_vals = 60 + 20 * np.sin(phase) + rng.normal(0.0, 3.0, size=n_weeks)
+    risk = pd.DataFrame({"date": dates, "global_risk_0_100": np.clip(risk_vals, 0, 100)})
+
+    price.to_csv(out_prices, index=False)
+    risk.to_csv(out_risk, index=False)
+    return out_prices, out_risk
+
+
+# --------------------------------------------------------------------------------------
+# Scenario helpers (operate on fitted params for custom risk paths)
+# --------------------------------------------------------------------------------------
+
+def _build_future_risk_path(last_risk_norm: float, steps: int, scale: float) -> List[float]:
+    """Create a flat path scaled around last_risk_norm (0..1 space)."""
+    val = max(0.0, min(1.0, last_risk_norm * scale))
+    return [val] * steps
+
+
+def run_custom_scenarios(
+    price_df: pd.DataFrame,
+    risk_df: pd.DataFrame,
+    *,
+    commodity: str,
+    mode: str,
+    horizons: List[int],
+    lags: int,
+    p: int,
+    q: int,
+    include_seasonal: bool,
+    season_period: int,
+    exog_cols: List[str] | None,
+) -> None:
+    """Fit once and forecast multiple risk scenarios; write CSV + PNG."""
+    # 1) Prepare merged frame according to mode
+    merged, features = merge_price_and_risk(
+        price_df,
+        risk_df,
+        price_col="price_front_fut",
+        risk_col="global_risk_0_100",
+        lags=lags,
+        mode=mode,
+        exog_cols=exog_cols,
+    )
+    if merged.empty:
+        raise SystemExit("Merged dataset is empty; cannot run scenarios.")
+
+    # 2) Fit model per selected mode
+    if mode == "legacy":
+        params = fit_arimax(merged, features)
+        # derive last risk from engineered columns
+        if "risk_lag1" in merged.columns:
+            last_risk_norm = float(merged["risk_lag1"].iloc[-1])
+        elif "risk_norm" in merged.columns:
+            last_risk_norm = float(merged["risk_norm"].iloc[-1])
+        else:
+            raise ValueError("Cannot infer last risk (legacy mode)")
+    else:
+        params = fit_arimax(
+            merged,
+            feature_cols=None,
+            p=p,
+            q=q,
+            include_seasonal=include_seasonal,
+            season_period=season_period,
+            extra_exog=exog_cols,
+        )
+        if "risk" not in merged.columns:
+            raise ValueError("Expected base 'risk' column in auto mode")
+        last_risk_norm = float(merged["risk"].iloc[-1])
+
+    last_obs = merged.iloc[-1]
+    last_price = float(price_df["price_front_fut"].iloc[-1])
+
+    # 3) Forecast for each scenario and horizon
+    scenario_defs = {
+        "base": 1.00,
+        "stress_up": 1.20,
+        "stress_dn": 0.80,
+    }
+
+    rows: List[Dict[str, Any]] = []
+    for h in horizons:
+        steps = max(1, int(h) // 7)
+        for name, scale in scenario_defs.items():
+            risk_seq = _build_future_risk_path(last_risk_norm, steps + max(1, q or lags) + 2, scale)
+            rets, pxs = forecast_arimax(last_price, last_obs, params, risk_seq, steps)
+            rows.append({
+                "scenario": name,
+                "horizon_days": int(h),
+                "steps": int(steps),
+                "cum_return": float(np.sum(rets)),
+                "price_forecast": float(pxs[-1]),
+            })
+
+        # Quick plot per horizon (overlay scenarios)
+        dates_hist = price_df["date"].to_numpy()
+        dates_fc = [dates_hist[-1] + pd.Timedelta(weeks=i + 1) for i in range(steps)]
+
+        plt.figure(figsize=(9, 4.5))
+        plt.plot(dates_hist, price_df["price_front_fut"], label="historical")
+        for name, scale in scenario_defs.items():
+            risk_seq = _build_future_risk_path(last_risk_norm, steps + max(1, q or lags) + 2, scale)
+            _, pxs = forecast_arimax(last_price, last_obs, params, risk_seq, steps)
+            plt.plot(dates_fc, pxs, label=f"{name}")
+        plt.title(f"Layer C – {commodity} – {h}d scenarios")
+        plt.legend(); plt.tight_layout()
+        out_png = REPORTS_DIR / f"{commodity}_layerC_{h}d_scenarios.png"
+        plt.savefig(out_png)
+        plt.close()
+
+    out_csv = GOLD_DIR / f"{commodity}_layerC_scenarios.csv"
+    pd.DataFrame(rows).to_csv(out_csv, index=False)
+    print(f"[OK] Wrote scenarios CSV → {out_csv}")
+    print(f"[OK] Wrote plots     → {REPORTS_DIR}")
+
+
+# --------------------------------------------------------------------------------------
+# Main entry
+# --------------------------------------------------------------------------------------
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Layer C smoke test with scenarios")
+    ap.add_argument("--commodity", default="wheat")
+    ap.add_argument("--mode", choices=["legacy", "auto"], default="auto")
+    ap.add_argument("--horizons", nargs="+", type=int, default=[30, 60, 90])
+    ap.add_argument("--lags", type=int, default=2, help="legacy mode: number of lags for y/risk")
+    ap.add_argument("--p", type=int, default=2, help="auto mode: AR order for y")
+    ap.add_argument("--q", type=int, default=2, help="auto mode: lag order for risk")
+    ap.add_argument("--no-seasonal", action="store_true", help="disable sin/cos seasonality in auto mode")
+    ap.add_argument("--season-period", type=int, default=52)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    # 1) Ensure input data exist (or generate synthetic)
+    prices_csv = TMP_DIR / "tmp_prices.csv"
+    risk_csv = TMP_DIR / "tmp_risk.csv"
+
+    if not prices_csv.exists() or not risk_csv.exists():
+        gen_synthetic_inputs(prices_csv, risk_csv, n_weeks=40, seed=args.seed)
+        print(f"[OK] Generated synthetic inputs at {prices_csv} and {risk_csv}")
+    else:
+        print(f"[OK] Using existing inputs at {prices_csv} and {risk_csv}")
+
+    price_df = pd.read_csv(prices_csv, parse_dates=["date"])  # required columns: date, price_front_fut
+    risk_df = pd.read_csv(risk_csv, parse_dates=["date"])    # required columns: date, global_risk_0_100
+
+    # 2) Run end‑to‑end training/forecast (single pass) and save summary
+    summary = train_and_forecast(
+        price_df,
+        risk_df,
+        horizons=args.horizons,
+        price_col="price_front_fut",
+        risk_col="global_risk_0_100",
+        lags=args.lags,
+        mode=args.mode,
+        p=args.p,
+        q=args.q,
+        include_seasonal=(not args.no_seasonal),
+        season_period=args.season_period,
+        exog_cols=None,
+    )
+    out_summary = GOLD_DIR / f"{args.commodity}_forecast_summary_{args.mode}.csv"
+    summary.to_csv(out_summary, index=False)
+    print(f"[OK] Wrote forecast summary → {out_summary}")
+    print(summary)
+
+    # 3) Run custom scenario set (base / stress_up / stress_dn) and save outputs
+    run_custom_scenarios(
+        price_df,
+        risk_df,
+        commodity=args.commodity,
+        mode=args.mode,
+        horizons=args.horizons,
+        lags=args.lags,
+        p=args.p,
+        q=args.q,
+        include_seasonal=(not args.no_seasonal),
+        season_period=args.season_period,
+        exog_cols=None,
+    )
+
+    print("[DONE] Layer C test completed.")
+
+
+if __name__ == "__main__":
+    main()
