@@ -6,34 +6,13 @@ This module orchestrates the construction of a global climate risk
 index by combining regional risk scores.  It relies on the functions
 provided in :mod:`climate_index.regional_score` to compute the
 per‑region contributions and then aggregates them using region
-weights specified in a configuration file.  The configuration is
-typically read from a YAML file under ``configs/commodities.yaml``
-which specifies, for each commodity, the list of regions, their
-respective weights and the factor weightings for the regional score.
+weights specified in a configuration file. 
 
-The primary function exported is :func:`compute_global_index`.
 Callers supply a data frame of aligned observations (the ``silver``
 data), a commodity identifier and a configuration mapping.  The
 function returns a new data frame with one row per date and the
 computed global risk index as well as per‑region contributions.
 
-Example
--------
-::
-
-    import pandas as pd
-    from climate_index.global_index import compute_global_index
-    from scripts.common import read_table
-    silver = read_table("data/silver/wheat_silver")
-    config = {
-        "wheat": {
-            "regions": [
-                {"id": "FR", "weight": 0.3, "factors": {"temp_anom": 0.4, "precip_anom": 0.4, "ndvi": 0.2}},
-                {"id": "US", "weight": 0.7, "factors": {"temp_anom": 0.5, "precip_anom": 0.3, "ndvi": 0.2}},
-            ]
-        }
-    }
-    idx_df = compute_global_index(silver, "wheat", config)
 
 """
 
@@ -58,18 +37,16 @@ def compute_global_index(
         An aligned data frame indexed by ``date`` and containing at
         least the columns ``region_id`` and the anomaly columns used
         by the regional score (e.g. ``temp_anom``, ``precip_anom``,
-        ``ndvi``, ``enso``).  This typically corresponds to the
+        ``ndvi``, ``enso``).  This corresponds to the
         ``silver`` layer produced by the ingestion pipeline.
     commodity : str
-        The commodity identifier.  It must exist as a top‑level key
-        in the configuration mapping.
+        The commodity identifier. 
     config : dict
         A mapping (parsed from YAML or constructed manually) where
         ``config[commodity]["regions"]`` is a list of region
         definitions.  Each region definition is a dict with keys:
 
-        - ``id``: the region identifier (matching values in
-          ``silver_df['region_id']``)
+        - ``id``: the region identifier
         - ``weight``: the importance weight of the region in the
           global index (e.g. share of production)
         - ``factors``: a mapping from column names to factor weights
@@ -84,11 +61,7 @@ def compute_global_index(
         - ``contrib_{region_id}``: contribution of each region to the
           global index (scaled 0..100)
 
-    Notes
-    -----
-    This function does not alter the order of the input ``silver_df``.
-    It assumes that each ``region_id`` in the configuration exists in
-    ``silver_df``.  Missing regions are ignored with a warning.
+
     """
 
     if commodity not in config:
