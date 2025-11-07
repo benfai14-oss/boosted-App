@@ -148,12 +148,27 @@ class WeatherClient:
                 # fall back to deterministic defaults if fetch failed
                 dates = pd.date_range(q.start, q.end, freq="D")
                 rng = np.random.default_rng(seed=(hash(q.region_id) % 1234567))
-                temps = pd.Series(rng.normal(loc=15.0, scale=5.0, size=len(dates)), index=dates)
-                precs = pd.Series(rng.gamma(shape=2.0, scale=1.0, size=len(dates)), index=dates)
-                daily = pd.concat([temps.rename("temp"), precs.rename("precip")], axis=1)
-            # aggregate to weekly
-            weekly = daily.resample("W-MON").agg({"temp": "mean", "precip": "sum"})
-            # compute z‑scores per variable (avoid divide by zero)
+
+                temps = pd.Series(
+                    rng.normal(loc=15.0, scale=5.0, size=len(dates)),
+                    index=dates,
+                    name="temp",
+                )
+                precs = pd.Series(
+                    rng.gamma(shape=2.0, scale=1.0, size=len(dates)),
+                    index=dates,
+                    name="precip",
+                )
+
+                daily = pd.concat([temps, precs], axis=1)
+                daily.index.name = "date"
+
+            # aggregate to weekly (weeks ending on Monday)
+            weekly = daily.resample("W-MON").agg(
+                {"temp": "mean", "precip": "sum"}
+            )
+
+            # compute z-scores per variable (avoid divide by zero)
             weekly = weekly.copy()
             for col in ["temp", "precip"]:
                 series = weekly[col]
@@ -163,13 +178,31 @@ class WeatherClient:
                     weekly[col + "_anom"] = 0.0
                 else:
                     weekly[col + "_anom"] = (series - mean) / std
+
             # assign region and placeholders for ndvi/enso
             weekly["region_id"] = q.region_id
-            weekly["ndvi"] = 0.0  # NDVI placeholder (requires separate API)
-            weekly["enso"] = 0.0  # ENSO placeholder (requires separate API)
-            frames.append(weekly[["region_id", "temp_anom", "precip_anom", "ndvi", "enso"]])
+            weekly["ndvi"] = 0.0  # NDVI placeholder
+            weekly["enso"] = 0.0  # ENSO placeholder
+
+            frames.append(
+                weekly[
+                    ["region_id", "temp_anom", "precip_anom", "ndvi", "enso"]
+                ]
+            )
+
         if not frames:
-            return pd.DataFrame(columns=["region_id", "temp_anom", "precip_anom", "ndvi", "enso"])
+            # always return the same schema
+            return pd.DataFrame(
+                columns=[
+                    "date",
+                    "region_id",
+                    "temp_anom",
+                    "precip_anom",
+                    "ndvi",
+                    "enso",
+                ]
+            )
+
         df_all = pd.concat(frames, axis=0)
         df_all.index.name = "date"
         df_all.reset_index(inplace=True)
