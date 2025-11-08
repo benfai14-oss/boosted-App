@@ -39,7 +39,8 @@ Le projet est en Python. Il contient un fichier `requirements.txt` listant les d
 - Lancer le script principal (exemple) :
 
   ```bash
-  python main.py
+      python -m scripts.pull_all
+
   ```
 
 - Si le projet inclut une interface Streamlit (vérifiez `README.md` ou `app.py`) :
