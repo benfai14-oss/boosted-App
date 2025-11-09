@@ -9,7 +9,7 @@ This version:
 2. Loads risk data from climate_index_<commodity>.csv
 3. Loads ARIMAX parameters
 4. Produces forecasts using ARIMAX coefficients (no refit)
-5. Builds a dynamic hedge strategy based on risk levels
+5. Builds a dynamic hedge strategy based on risk levels (0–100 scale)
 6. Evaluates hedge performance and generates a report
 """
 
@@ -96,26 +96,36 @@ def dynamic_hedging_from_pipeline(
     # --- Forecast using ARIMAX model ---
     last_price = df["price"].iloc[-1]
     last_row = df.iloc[-1]
-    risk_series = df["risk"].tail(horizon).fillna(50).reset_index(drop=True)
+
+    # Determine how many risk lags are needed for the ARIMAX model
+    risk_lags = [c for c in params.get("feature_cols", []) if c.startswith("risk_lag")]
+    q = len(risk_lags)
+    needed = horizon + max(0, q - 1)
+
+    # The ARIMAX expects normalized risk (0–1)
+    risk_future = (df["risk"].tail(max(horizon, needed)) / 100.0).fillna(0.5).reset_index(drop=True)
 
     forecasts, forecast_prices = arimax.forecast_arimax(
         last_price=last_price,
         last_row=last_row,
         params=params,
-        risk_future=risk_series.to_list(),
+        risk_future=risk_future.to_list(),
         horizon=horizon,
     )
 
     if len(forecast_prices) == 0:
         raise ValueError("ARIMAX forecast returned no results — check model coefficients.")
 
+    # ✅ Reconvert risk back to 0–100 scale for hedging
+    risk_for_hedge = risk_future.iloc[:horizon].copy() * 100.0
+
     # --- Compute optimal hedge ratio ---
     returns = np.log(df["price"]).diff().dropna()
     hedge_ratio_opt = optimize_hedge_ratio(returns, returns.shift(1).dropna())
 
-    # --- Adjust dynamically by risk ---
+    # --- Adjust dynamically by risk (0–100 scale) ---
     hedge_ratio = []
-    for r in risk_series:
+    for r in risk_for_hedge:
         if r >= high_risk_threshold:
             ratio = min(1.0, hedge_ratio_opt * 1.25)
         elif r <= low_risk_threshold:
@@ -133,7 +143,7 @@ def dynamic_hedging_from_pipeline(
     hedge_df = pd.DataFrame({
         "forecast_return": forecasts,
         "forecast_price": forecast_prices,
-        "risk": risk_series,
+        "risk": risk_for_hedge,
         "hedge_ratio": hedge_ratio,
         "hedge_position": hedge_position,
     })
