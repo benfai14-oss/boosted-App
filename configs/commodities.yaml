@@ -1,0 +1,71 @@
+wheat:
+  regions:
+    - id: FR
+      weight: 0.20
+      factors:
+        temp_anom: 0.4
+        precip_anom: 0.4
+        ndvi: 0.1
+        enso: 0.1
+    - id: US
+      weight: 0.30
+      factors:
+        temp_anom: 0.4
+        precip_anom: 0.4
+        ndvi: 0.1
+        enso: 0.1
+    - id: BR
+      weight: 0.10
+      factors:
+        temp_anom: 0.3
+        precip_anom: 0.5
+        ndvi: 0.1
+        enso: 0.1
+    - id: UA
+      weight: 0.40
+      factors:
+        temp_anom: 0.4
+        precip_anom: 0.4
+        ndvi: 0.1
+        enso: 0.1
+
+soybean:
+  regions:
+    - id: US
+      weight: 0.35
+      factors:
+        temp_anom: 0.35
+        precip_anom: 0.45
+        ndvi: 0.1
+        enso: 0.1
+    - id: BR
+      weight: 0.40
+      factors:
+        temp_anom: 0.4
+        precip_anom: 0.4
+        ndvi: 0.1
+        enso: 0.1
+    - id: AR
+      weight: 0.15
+      factors:
+        temp_anom: 0.35
+        precip_anom: 0.45
+        ndvi: 0.1
+        enso: 0.1
+    - id: CN
+      weight: 0.10
+      factors:
+        temp_anom: 0.3
+        precip_anom: 0.4
+        ndvi: 0.2
+        enso: 0.1
+
+corn:
+  regions:
+    - id: US
+      weight: 0.35
+      factors:
+        temp_anom: 0.35
+        precip_anom: 0.45
+        ndvi: 0.1
+        enso: 0.1

@@ -1,0 +1,3 @@
+{"timestamp": "2025-11-08T15:55:38.976089Z", "layer": "ingestion", "action": "weather_written", "payload": {"path": "data/silver/weather/weather_anomalies.parquet", "rows": 4704}}
+{"timestamp": "2025-11-08T15:55:44.032162Z", "layer": "ingestion", "action": "market_written", "payload": {"path": "data/silver/market/market_prices.parquet", "rows": 4704}}
+{"timestamp": "2025-11-08T15:55:46.920670Z", "layer": "ingestion", "action": "agri_written", "payload": {"path": "data/silver/agri/agri_indicators.parquet", "rows": 4698}}

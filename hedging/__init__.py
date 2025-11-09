@@ -1,3 +1,2 @@
-from .advanced import recommend_hedge
+from .advanced import dynamic_hedging_from_pipeline
 
-__all__ = ["recommend_hedge"]

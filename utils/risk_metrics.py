@@ -244,3 +244,13 @@ def max_drawdown(price_series: Sequence[float]) -> Tuple[float, float]:
     below_peak = (prices < cummax).sum()
     duration = below_peak / len(prices)
     return float(max_dd), float(duration)
+
+# --- Compatibility aliases for hedging module ---
+def calculate_var(returns, alpha: float = 0.05) -> float:
+    """Alias for value_at_risk for backward compatibility."""
+    return abs(value_at_risk(returns, confidence_level=1 - alpha))
+
+
+def calculate_cvar(returns, alpha: float = 0.05) -> float:
+    """Alias for conditional_value_at_risk for backward compatibility."""
+    return abs(conditional_value_at_risk(returns, confidence_level=1 - alpha))

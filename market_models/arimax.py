@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 market_models.arimax (extended)
 --------------------------------
@@ -24,8 +26,6 @@ This is NOT a full statistical package. There is no automatic order
 selection nor full inference suite. It is intentionally simple,
 explicit and auditable.
 """
-
-from __future__ import annotations
 
 from typing import Dict, List, Tuple, Optional
 import math

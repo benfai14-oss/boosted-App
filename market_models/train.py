@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 market_models.train
 -------------------
@@ -32,8 +33,6 @@ ARIMAX. This version supports two preparation modes and seasonal terms.
 Outputs a compact table with horizons, cumulative returns, price
 forecasts and naive 95% bands from residual variance.
 """
-
-from __future__ import annotations
 
 from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
