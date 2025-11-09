@@ -2,8 +2,8 @@
 climate_index.features
 ----------------------
 
-This module provides low‑level utilities for transforming raw
-meteorological signals into dimensionless quantities suitable for
+This module transforms raw
+meteorological signals into a bounded index suitable for
 aggregation into a climate risk index.  The functions defined here
 operate on ``pandas.Series`` objects and return new series aligned on
 the same index.  They are deliberately free of side effects so that
@@ -14,30 +14,14 @@ The two core transformations implemented are:
 
 * ``seasonal_zscore`` – computes a z‑score within a seasonal period
   (e.g. week of year).  This transformation removes persistent
-  seasonal patterns from the data, allowing anomalies across different
-  seasons to be compared on a common scale.  By default the seasonal
+  seasonal patterns from the data.  By default the seasonal
   grouping variable is the ISO week number, but it can be changed via
   the ``season_col`` argument.
 * ``logistic_scale`` – maps a continuous signal onto the interval
-  [0, 100] via a logistic (sigmoid) function.  This is useful for
-  converting an unbounded risk measure into a bounded score that can
-  easily be interpreted as a percentage.  The slope and midpoint of
+  [0, 100] via a logistic (sigmoid) function.  The slope and midpoint of
   the logistic curve may be adjusted through the ``a`` and ``b``
   parameters.
 
-Example usage::
-
-    import pandas as pd
-    from climate_index.features import seasonal_zscore, logistic_scale
-
-    # Suppose ``temp_anom`` is a weekly series of temperature anomalies
-    z = seasonal_zscore(temp_anom)
-    scaled = logistic_scale(z)
-
-See Also
---------
-climate_index.regional_score : for combining multiple features into a
-regional score.
 """
 
 from __future__ import annotations
@@ -70,8 +54,7 @@ def seasonal_zscore(
     ddof : int, default 0
         Degrees of freedom used when normalising by the standard
         deviation.  The default ``0`` normalises by the population
-        standard deviation.  Setting this to ``1`` yields the
-        sample standard deviation.
+        standard deviation. 
 
     Returns
     -------
@@ -80,14 +63,6 @@ def seasonal_zscore(
         z‑scores.  Observations in groups of length one will result in
         NaN since a standard deviation cannot be computed.
 
-    Notes
-    -----
-    This function will include groups of length one when computing
-    statistics.  If your dataset has isolated dates that do not share
-    a season with any other date, the z‑score for those dates will be
-    undefined (NaN).  Callers should handle these missing values as
-    appropriate (e.g. forward fill or impute).  The underlying
-    implementation relies on ``pandas`` groupby semantics.
     """
 
     if not isinstance(series.index, pd.DatetimeIndex):
