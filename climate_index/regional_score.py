@@ -2,45 +2,24 @@
 climate_index.regional_score
 ---------------------------
 
-The purpose of this module is to provide a convenient wrapper for
-combining multiple normalised meteorological indicators into a single
+The purpose of this module is to combine multiple normalised 
+meteorological indicators into a single
 regional risk score.  A regional risk score quantifies the degree of
 climate stress experienced by a given region at a particular time and
 is computed as a weighted linear combination of z‑scored signals
-followed by a logistic scaling.  The weighting scheme allows users
-to emphasise factors that are more important for certain crops or
-geographies (e.g. precipitation for rice versus temperature for wheat).
+followed by a logistic scaling.  
 
 As inputs, the main function expects a ``pandas.DataFrame`` with
 columns corresponding to normalised anomalies (e.g. ``temp_anom``,
-``precip_anom``, ``ndvi``, ``enso``).  Each column should already
-represent a deviation from a long‐term mean or a z‑score.  The
+``precip_anom``, ``ndvi``, ``enso``).  The
 ``factor_weights`` argument is a simple mapping from column name to
-weight.  Missing columns are ignored but a warning will be issued if
-all weights map to missing columns.
+weight. 
 
 The output is a ``pandas.Series`` indexed like the input DataFrame
 whose values lie in the range [0, 100].  A higher score indicates
 greater climate stress.
 
-Example
--------
-::
 
-    import pandas as pd
-    from climate_index.regional_score import compute_regional_score
-    df = pd.DataFrame({
-        "temp_anom": [0.2, 0.4, -0.1],
-        "precip_anom": [-0.5, -0.2, 0.0],
-        "ndvi": [0.1, 0.2, 0.1],
-        "enso": [1.0, 1.1, 0.9],
-    }, index=pd.date_range("2023-01-01", periods=3, freq="W"))
-    weights = {"temp_anom": 0.4, "precip_anom": 0.3, "ndvi": 0.2, "enso": 0.1}
-    score = compute_regional_score(df, weights)
-
-See Also
---------
-climate_index.features : for functions used to normalise inputs.
 """
 
 from __future__ import annotations
@@ -83,12 +62,6 @@ def compute_regional_score(
         A series of shape ``(len(df),)`` containing the regional
         climate risk scores in the range [0, 100].
 
-    Notes
-    -----
-    The underlying linear combination uses the normalised weights to
-    avoid biasing the score by the scale of the input series.  If no
-    input columns match the keys of ``factor_weights`` a series of
-    zeros will be returned and a ``ValueError`` raised.
     """
     # Filter weights to those actually present in df
     present = {k: v for k, v in factor_weights.items() if k in df.columns}
