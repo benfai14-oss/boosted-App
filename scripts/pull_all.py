@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import List
-
 import pandas as pd
 
 from ingestion.clients import WeatherClient, MarketClient, AgriClient
@@ -52,22 +51,11 @@ COMMODITIES: List[str] = [
 START_DATE = "2010-01-01"
 END_DATE = "2024-12-31"
 
-
 # ---------------------------------------------------------------------------
 # 1) WEATHER
 # ---------------------------------------------------------------------------
 
 def build_weather_anomalies() -> None:
-    """
-    Fetch weather data via WeatherClient, compute weekly anomalies,
-    and persist a clean table in CSV format.
-
-    Output:
-        data/silver/weather/weather_anomalies.csv
-
-    Columns (expected):
-        date, region_id, temp_anom, precip_anom, ndvi, enso
-    """
     logger.info("Building weather anomalies dataset...")
 
     client = WeatherClient()
@@ -76,10 +64,7 @@ def build_weather_anomalies() -> None:
         for rid in REGIONS
     ]
 
-    df = client.fetch_weather_anomalies(
-        commodity="wheat",
-        queries=queries,
-    )
+    df = client.fetch_weather_anomalies(commodity="wheat", queries=queries)
 
     if df.empty:
         logger.warning("Weather anomalies dataframe is empty. No file written.")
@@ -88,34 +73,14 @@ def build_weather_anomalies() -> None:
     out_dir = Path("data/silver/weather")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "weather_anomalies.csv"
-
     df.to_csv(out_file, index=False)
-
-    logger.info(
-        "Saved weather anomalies to %s with shape %s",
-        out_file,
-        df.shape,
-    )
-
+    logger.info("Saved weather anomalies to %s with shape %s", out_file, df.shape)
 
 # ---------------------------------------------------------------------------
 # 2) MARKET
 # ---------------------------------------------------------------------------
 
 def build_market_prices() -> None:
-    """
-    Fetch weekly market data for configured commodities via MarketClient
-    and persist a stacked CSV table.
-
-    Expected MarketClient interface:
-        fetch_prices(commodity: str, start: str, end: str) -> DataFrame
-
-    Output:
-        data/silver/market/market_prices.csv
-
-    Example columns:
-        date, commodity, price_spot, price_front_fut, realized_vol_30d
-    """
     logger.info("Building market prices dataset...")
 
     client = MarketClient()
@@ -123,17 +88,9 @@ def build_market_prices() -> None:
 
     for com in COMMODITIES:
         try:
-            df = client.fetch_prices(
-                commodity=com,
-                start=START_DATE,
-                end=END_DATE,
-            )
+            df = client.fetch_prices(commodity=com, start=START_DATE, end=END_DATE)
         except TypeError as exc:
-            logger.error(
-                "Error calling fetch_prices for commodity '%s': %s",
-                com,
-                exc,
-            )
+            logger.error("Error calling fetch_prices for commodity '%s': %s", com, exc)
             continue
 
         if df is None or df.empty:
@@ -141,52 +98,26 @@ def build_market_prices() -> None:
             continue
 
         df = df.copy()
-
-        # Ensure a 'commodity' column exists so we can stack all series
         if "commodity" not in df.columns:
             df.insert(1, "commodity", com)
-
         frames.append(df)
 
     if not frames:
-        logger.warning(
-            "No market prices retrieved for any commodity. No file written."
-        )
+        logger.warning("No market prices retrieved for any commodity.")
         return
 
     all_prices = pd.concat(frames, axis=0, ignore_index=True)
-
     out_dir = Path("data/silver/market")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "market_prices.csv"
-
     all_prices.to_csv(out_file, index=False)
-
-    logger.info(
-        "Saved market prices to %s with shape %s",
-        out_file,
-        all_prices.shape,
-    )
-
+    logger.info("Saved market prices to %s with shape %s", out_file, all_prices.shape)
 
 # ---------------------------------------------------------------------------
 # 3) AGRI
 # ---------------------------------------------------------------------------
 
 def build_agri_indicators() -> None:
-    """
-    Fetch agricultural production / stocks proxies via AgriClient
-    for all configured regions and save as CSV.
-
-    Expected AgriClient interface:
-        fetch_production_stocks(region_id: str, start: str, end: str) -> DataFrame
-
-    Output:
-        data/silver/agri/agri_indicators.csv
-
-    Example columns:
-        date, region_id, prod_estimate, stocks
-    """
     logger.info("Building agricultural indicators dataset...")
 
     client = AgriClient()
@@ -194,17 +125,9 @@ def build_agri_indicators() -> None:
 
     for rid in REGIONS:
         try:
-            df = client.fetch_production_stocks(
-                region_id=rid,
-                start=START_DATE,
-                end=END_DATE,
-            )
+            df = client.fetch_production_stocks(region_id=rid, start=START_DATE, end=END_DATE)
         except TypeError as exc:
-            logger.error(
-                "Error calling fetch_production_stocks for region '%s': %s",
-                rid,
-                exc,
-            )
+            logger.error("Error calling fetch_production_stocks for region '%s': %s", rid, exc)
             continue
 
         if df is None or df.empty:
@@ -212,55 +135,62 @@ def build_agri_indicators() -> None:
             continue
 
         df = df.copy()
-
-        # Ensure a 'region_id' column exists
         if "region_id" not in df.columns:
             df["region_id"] = rid
-
         frames.append(df)
 
     if not frames:
-        logger.warning(
-            "No agricultural indicators retrieved for any region. No file written."
-        )
+        logger.warning("No agricultural indicators retrieved for any region.")
         return
 
     all_agri = pd.concat(frames, axis=0, ignore_index=True)
-
     out_dir = Path("data/silver/agri")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "agri_indicators.csv"
-
     all_agri.to_csv(out_file, index=False)
+    logger.info("Saved agri indicators to %s with shape %s", out_file, all_agri.shape)
 
-    logger.info(
-        "Saved agri indicators to %s with shape %s",
-        out_file,
-        all_agri.shape,
-    )
+# ---------------------------------------------------------------------------
+# 4) MERGE SILVER DATA
+# ---------------------------------------------------------------------------
 
+def merge_silver_data() -> None:
+    base = Path("data/silver")
+
+    def safe_read(path):
+        return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+    weather = safe_read(base / "weather" / "weather_anomalies.csv")
+    market = safe_read(base / "market" / "market_prices.csv")
+    agri = safe_read(base / "agri" / "agri_indicators.csv")
+
+    if weather.empty and market.empty and agri.empty:
+        print("No data available to merge.")
+        return
+
+    df = weather
+    if not agri.empty:
+        df = df.merge(agri, on=["date", "region_id"], how="outer")
+    if not market.empty:
+        df = df.merge(market, on="date", how="outer")
+
+    out_path = base / "silver_data.csv"
+    df.to_csv(out_path, index=False)
+    print(f"Merged silver_data.csv created at {out_path} with shape {df.shape}")
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """
-    Orchestrate all Layer A pulls.
-
-    Steps:
-      - Weather anomalies by region
-      - Market prices & vol by commodity
-      - Agri production / stocks by region
-    """
     logger.info("Starting full data pull (Layer A)...")
 
     build_weather_anomalies()
     build_market_prices()
     build_agri_indicators()
+    merge_silver_data()
 
     logger.info("Full data pull completed.")
-
 
 if __name__ == "__main__":
     main()

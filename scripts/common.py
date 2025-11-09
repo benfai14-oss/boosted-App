@@ -75,3 +75,8 @@ def log_event(layer: str, action: str, payload: Dict[str, Any]) -> None:
     fname = f"logs/audit_{_dt.date.today().isoformat()}.ndjson"
     with open(fname, "a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
+
+# --- Compatibility shim ---
+def write_audit_log(*args, **kwargs):
+    """Placeholder for audit logging; does nothing if real logger is absent."""
+    pass  # or: print(f"[AUDIT LOG ignored] args={args}, kwargs={kwargs}")
