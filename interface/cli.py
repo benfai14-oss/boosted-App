@@ -1,6 +1,6 @@
 """
 Command-line interface (CLI) for data ingestion, climate index computation,
-market modeling (ARIMAX), and dynamic hedging.
+market modeling (ARIMAX), and advanced dynamic hedging.
 
 Usage examples:
     python -m interface.cli ingest --commodity wheat --regions FR,US,BR --start 2024-01-01 --end 2025-10-01
@@ -15,12 +15,15 @@ import argparse
 import subprocess
 from pathlib import Path
 from typing import List, Optional
+import json
 
 import pandas as pd
 import yaml
+import numpy as np
+
 from climate_index import global_index
 from market_models import arimax
-import numpy as np
+from hedging import advanced as adv
 
 
 # =========================================================
@@ -129,15 +132,15 @@ def run_market_model(args: argparse.Namespace) -> None:
 
 
 # =========================================================
-# 4. HEDGING DYNAMIC COMMAND
+# 4. HEDGING DYNAMIC COMMAND (ARIMAX-INTEGRATED)
 # =========================================================
 def run_hedging_dynamic(args: argparse.Namespace) -> None:
-    """Run the advanced dynamic hedging strategy using ARIMAX results and climate risk data."""
-    from hedging.advanced import dynamic_hedging_from_pipeline
+    """Run the advanced dynamic hedging strategy using ARIMAX forecasts and climate risk data."""
+    commodity = args.commodity.lower()
+    print(f"Running dynamic hedging for {commodity}...\n")
 
-    print(f"Running dynamic hedging for {args.commodity}...\n")
     try:
-        hedge_df, report = dynamic_hedging_from_pipeline(
+        hedge_df, report = adv.dynamic_hedging_from_pipeline(
             commodity=args.commodity,
             horizon=args.horizon,
             exposure=args.exposure,
@@ -147,16 +150,29 @@ def run_hedging_dynamic(args: argparse.Namespace) -> None:
         print(f"[ERROR] Dynamic hedging failed: {e}")
         return
 
+    # --- Output results ---
+    output_dir = Path("data/silver")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    hedge_path = output_dir / f"hedging_{commodity}.csv"
+    hedge_df.to_csv(hedge_path, index=False)
+
+    report_path = output_dir / f"hedging_report_{commodity}.txt"
+    with report_path.open("w", encoding="utf-8-sig") as f:
+        f.write(report)
+
     print("\n=== Hedging Completed ===")
     print(report)
-    print("\nResults saved under data/silver/hedging_<commodity>.csv")
+    print(f"\nResults saved under:\n  {hedge_path}\n  {report_path}")
 
 
 # =========================================================
 # MAIN ENTRYPOINT
 # =========================================================
 def main(argv: Optional[List[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="Global Climate Hedging CLI (Ingestion + Climate Index + Market Model + Dynamic Hedging)")
+    parser = argparse.ArgumentParser(
+        description="Global Climate Hedging CLI (Ingestion + Climate Index + Market Model + Dynamic Hedging)"
+    )
     sub = parser.add_subparsers(dest="command")
 
     # --- Ingest command ---
@@ -180,13 +196,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     mm_parser.set_defaults(func=run_market_model)
 
     # --- Hedging dynamic command ---
-    hedge_parser = sub.add_parser("hedging-dynamic", help="Run dynamic hedging using ARIMAX and risk data")
+    hedge_parser = sub.add_parser("hedging-dynamic", help="Run dynamic hedging using ARIMAX forecasts")
     hedge_parser.add_argument("--commodity", required=True, help="Commodity name (e.g. wheat)")
-    hedge_parser.add_argument("--horizon", type=int, default=8, help="Forecast horizon (weeks)")
+    hedge_parser.add_argument("--horizon", type=int, default=8, help="Forecast horizon in weeks")
     hedge_parser.add_argument("--role", choices=["importer", "exporter"], default="importer", help="Hedging role")
+    hedge_parser.add_argument("--profile", choices=["conservative", "balanced", "opportunistic"],
+                               default="balanced", help="Risk profile (for display only)")
     hedge_parser.add_argument("--exposure", type=float, default=1000.0, help="Exposure quantity to hedge")
     hedge_parser.set_defaults(func=run_hedging_dynamic)
 
+    # --- Execute ---
     parsed = parser.parse_args(argv)
     if not hasattr(parsed, "func"):
         parser.print_help()
