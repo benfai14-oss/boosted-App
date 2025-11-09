@@ -1,33 +1,17 @@
 from __future__ import annotations
-"""
-market_models.train
--------------------
 
-This module glues together the preparation and modelling functions
-defined in :mod:`market_models.prep` and :mod:`market_models.arimax`.
-It provides a single high‑level function
-:func:`train_and_forecast` which accepts raw price and risk data frames,
-fits a simple ARIMAX model and generates forecasts for multiple
-user‑specified horizons.  The resulting forecasts include point
-predictions as well as naive confidence intervals based on the
-residual variance.
-
-Users of the CLI defined in :mod:`interface.cli` can call this
-function directly through the ``forecast`` subcommand.  Alternatively,
-it may be imported and called programmatically.
-"""
 """
 market_models.train (extended)
 ------------------------------
 
-High‑level training/forecast entry point for Layer C using the extended
+High-level training/forecast entry point for Layer C using the extended
 ARIMAX. This version supports two preparation modes and seasonal terms.
 
 • mode="legacy": maintain backward compatibility. We construct explicit
   lag columns in :mod:`market_models.prep` and pass them as
   `feature_cols` to the model.
 • mode="auto": we only compute the target `y` and a base risk column
-  normalised to 0..1 (named `risk`). The model will auto‑build lags and
+  normalised to 0..1 (named `risk`). The model will auto-build lags and
   seasonality (p, q, sin/cos).
 
 Outputs a compact table with horizons, cumulative returns, price
