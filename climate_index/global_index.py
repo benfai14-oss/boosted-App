@@ -36,8 +36,8 @@ def compute_global_index(
     silver_df : pandas.DataFrame
         An aligned data frame indexed by ``date`` and containing at
         least the columns ``region_id`` and the anomaly columns used
-        by the regional score (e.g. ``temp_anom``, ``precip_anom``,
-        ``ndvi``, ``enso``).  This corresponds to the
+        by the regional score (e.g. ``temp_anom``, ``precip_anom``)
+        This corresponds to the
         ``silver`` layer produced by the ingestion pipeline.
     commodity : str
         The commodity identifier. 
@@ -84,20 +84,15 @@ def compute_global_index(
             continue
         # Compute regional score
         region_df["_regional_score"] = compute_regional_score(region_df, factors)
+
+        region_df = (region_df.groupby("date", as_index=False)["_regional_score"].mean() ) 
         # Multiply by the region weight to obtain contribution
         region_df[f"contrib_{region_id}"] = region_df["_regional_score"] * weight
         contrib_frames.append(region_df[["date", f"contrib_{region_id}"]])
 
     if not contrib_frames:
         raise ValueError("No regional contributions computed – check configuration and data")
-
-    # === juste avant de faire append(region_df[["date", ...]]) ===
-    region_df = (
-    region_df.groupby("date", as_index=False)["_regional_score"]
-    .mean()  # ou .last() selon ton besoin
-    )
-    region_df[f"contrib_{region_id}"] = region_df["_regional_score"] * weight
-    contrib_frames.append(region_df[["date", f"contrib_{region_id}"]])
+    
 
     # Merge contributions on date
     contrib_merged = contrib_frames[0]
