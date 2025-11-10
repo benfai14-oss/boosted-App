@@ -1,218 +1,151 @@
 """
-Advanced Hedging Module (ARIMAX-Integrated)
-===========================================
+Simple hedging recommendation engine with ARIMAX integration.
 
-This module implements a **dynamic hedging framework** that integrates
-climate risk indicators and market price forecasts produced by the
-**ARIMAX model**. It is designed for corporate treasurers, traders, and
-risk managers who need to quantify and mitigate exposure to commodity
-price fluctuations under climate uncertainty.
+This module links the ARIMAX forecast results and the global climate
+risk index to produce a business-level hedging recommendation.
 
-Core Features:
---------------
-1. **Dynamic hedge ratio** — adapts continuously to changes in
-   the global climate risk index and the direction of ARIMAX
-   price forecasts.
-2. **Multi-horizon forecasting** — uses 4-, 8-, and 12-week
-   horizons to capture medium-term dynamics and compute
-   meaningful risk metrics (mean, volatility, VaR, CVaR).
-3. **Automated report generation** — produces a plain-text
-   performance summary and a CSV file with the computed hedge
-   ratios and positions.
-4. **Interpretability** — outputs an interpretation block
-   explaining the hedge effectiveness and the level of coverage.
+Inputs
+------
+- ARIMAX forecast (latest predicted price and trend)
+- Global climate risk score (0–100)
+- User profile ('balanced', 'conservative', 'opportunistic')
+- Role ('importer' or 'exporter')
+- Exposure size
 
-Integration:
-------------
-This module connects to the ARIMAX forecasting engine
-(`market_models.train.train_and_forecast`) to automatically compute
-an optimal hedge position for a given exposure and role
-(`importer` or `exporter`).
-
-Typical usage (via CLI):
-------------------------
-    python -m interface.cli hedging-dynamic --commodity wheat --role importer --exposure 5000
-
-Output:
+Outputs
 -------
-- `data/silver/hedging_<commodity>.csv`  → hedging ratios and positions
-- `data/silver/hedging_report_<commodity>.txt`  → performance report
+A dictionary with:
+- hedge_ratio
+- instrument
+- hedge_notional
+- summary (text explanation)
 """
 
-from __future__ import annotations
-from typing import Dict, List, Tuple
-import numpy as np
+from typing import Dict, Literal
+import json
 import pandas as pd
-from pathlib import Path
-from utils.risk_metrics import calculate_var, calculate_cvar
-from market_models.train import train_and_forecast
 
 
-# ---------------------------------------------------------------------
-# 1️⃣ Dynamic hedging strategy
-# ---------------------------------------------------------------------
-def dynamic_hedging_strategy(
-    risk_series: pd.Series,
-    forecast_series: pd.Series,
+# --- Hedge profile configuration ---
+profiles: Dict[str, Dict[str, float]] = {
+    "conservative": {"base": 0.60, "bump": 0.20, "threshold": 70.0},
+    "balanced": {"base": 0.45, "bump": 0.15, "threshold": 75.0},
+    "opportunistic": {"base": 0.20, "bump": 0.10, "threshold": 80.0},
+}
+
+
+def recommend_hedge_from_arimax(
+    forecast_path: str,
+    risk_index_path: str,
     *,
-    base_hedge_ratio: float = 0.5,
-    high_risk_threshold: float = 70.0,
-    low_risk_threshold: float = 30.0,
-    role: str = "importer",
-    exposure: float = 1.0,
-) -> pd.DataFrame:
-    """Compute a hedge ratio that adapts to climate risk and ARIMAX forecasts."""
-    hedge_ratio = []
-    for r, f in zip(risk_series, forecast_series):
-        if np.isnan(r):
-            ratio = base_hedge_ratio
-        elif r >= high_risk_threshold:
-            ratio = 1.0
-        elif r <= low_risk_threshold:
-            ratio = 0.0
-        else:
-            ratio = (r - low_risk_threshold) / (high_risk_threshold - low_risk_threshold)
-
-        # Adjust with forecast direction
-        if not np.isnan(f):
-            if f > 0 and role == "importer":
-                ratio = min(1.0, ratio + 0.1)
-            elif f < 0 and role == "exporter":
-                ratio = min(1.0, ratio + 0.1)
-
-        hedge_ratio.append(ratio)
-
-    sign = 1.0 if role == "importer" else -1.0
-    hedge_position = pd.Series(hedge_ratio, index=risk_series.index) * exposure * sign
-
-    return pd.DataFrame({
-        "hedge_ratio": hedge_ratio,
-        "hedge_position": hedge_position
-    }, index=risk_series.index)
-
-
-# ---------------------------------------------------------------------
-# 2️⃣ Performance evaluation
-# ---------------------------------------------------------------------
-def evaluate_hedge_performance(
-    portfolio_returns: pd.Series,
-    hedge_returns: pd.Series,
-    hedge_ratio: float,
-    *,
-    alpha: float = 0.05,
+    profile: Literal["conservative", "balanced", "opportunistic"] = "balanced",
+    role: Literal["importer", "exporter"] = "importer",
+    exposure: float = 10000.0,
 ) -> Dict[str, float]:
-    """Compute mean, volatility, VaR and CVaR of hedged returns."""
-    hedged = portfolio_returns - hedge_ratio * hedge_returns
-    return {
-        "mean": float(hedged.mean()),
-        "volatility": float(hedged.std(ddof=0)),
-        "var": float(calculate_var(hedged, alpha)),
-        "cvar": float(calculate_cvar(hedged, alpha)),
+    """
+    Generate a hedging recommendation using ARIMAX forecast results
+    and the global climate risk index.
+    """
+
+    # --- Load data ---
+    forecast_df = pd.read_json(forecast_path)
+    risk_df = pd.read_json(risk_index_path)
+
+    if "price_forecast" not in forecast_df.columns:
+        raise ValueError("Forecast JSON must contain a 'price_forecast' column.")
+    if "global_risk_0_100" not in risk_df.columns:
+        raise ValueError("Risk index JSON must contain 'global_risk_0_100' column.")
+
+    # --- Extract latest forecast and risk ---
+    last_forecast = forecast_df["price_forecast"].iloc[-1]
+    prev_forecast = forecast_df["price_forecast"].iloc[-2] if len(forecast_df) > 1 else last_forecast
+    last_risk = risk_df["global_risk_0_100"].iloc[-1]
+
+    # --- Determine scenario based on forecast trend ---
+    if last_forecast > prev_forecast * 1.02:
+        scenario = "bullish"
+    elif last_forecast < prev_forecast * 0.98:
+        scenario = "extreme"
+    else:
+        scenario = "baseline"
+
+    # --- Profile configuration ---
+    if profile not in profiles:
+        raise KeyError(f"Unknown profile '{profile}'. Valid: {list(profiles.keys())}")
+    cfg = profiles[profile]
+    hedge_ratio = cfg["base"]
+    explanation = [f"Base hedge ratio for {profile} profile: {hedge_ratio:.0%}."]
+
+    # --- Adjust for climate risk ---
+    if last_risk >= cfg["threshold"]:
+        hedge_ratio += cfg["bump"]
+        explanation.append(
+            f"Climate risk {last_risk:.1f} exceeds threshold {cfg['threshold']} → add bump {cfg['bump']:.0%}."
+        )
+
+    # --- Adjust for scenario (from ARIMAX trend) ---
+    if scenario == "bullish":
+        hedge_ratio += 0.05
+        explanation.append("Bullish ARIMAX forecast → increase hedge ratio by 5 pp.")
+    elif scenario == "extreme":
+        hedge_ratio += 0.10
+        explanation.append("Extreme ARIMAX forecast → increase hedge ratio by 10 pp.")
+
+    # --- Final hedge ratio ---
+    hedge_ratio = min(max(hedge_ratio, 0.0), 1.0)
+
+    # --- Determine instrument ---
+    if role == "importer":
+        instrument = "long futures" if scenario != "baseline" else "long call options"
+    else:
+        instrument = "short futures" if scenario != "baseline" else "long put options"
+
+    hedge_notional = hedge_ratio * exposure
+    explanation.append(
+        f"Role: {role} → use '{instrument}'. Exposure {exposure} → hedge {hedge_notional:.2f} units."
+    )
+
+    result = {
+        "hedge_ratio": hedge_ratio,
+        "instrument": instrument,
+        "hedge_notional": hedge_notional,
+        "scenario": scenario,
+        "risk_score": last_risk,
+        "forecast_price": last_forecast,
+        "summary": " ".join(explanation),
     }
 
+    # Optional: save output next to forecast file
+    out_path = forecast_path.replace("_forecast.json", "_hedge_rec.json")
+    with open(out_path, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"Hedging recommendation saved to {out_path}")
 
-# ---------------------------------------------------------------------
-# 3️⃣ Report generation
-# ---------------------------------------------------------------------
-def generate_hedge_report(
-    hedge_positions: pd.DataFrame,
-    performance_metrics: Dict[str, float],
-) -> str:
-    """Format hedge results into a readable text report."""
-    lines = [
-        "Hedge Performance Report (ARIMAX-integrated)",
-        "=" * 45,
-        "",
-        f"Total adjustments: {len(hedge_positions)}",
-        f"Final hedge ratio: {hedge_positions['hedge_ratio'].iloc[-1]:.3f}",
-        f"Final hedge position: {hedge_positions['hedge_position'].iloc[-1]:.2f}",
-        "",
-        "Performance Metrics:"
-    ]
-    for k, v in performance_metrics.items():
-        lines.append(f"  {k.capitalize():<12}: {v:.4f}")
-
-    interpretation = (
-        "\nInterpretation:\n"
-        f"  - Final hedge ratio = {hedge_positions['hedge_ratio'].iloc[-1]*100:.1f}% of exposure hedged"
-    )
-    lines.append(interpretation)
-    return "\n".join(lines)
+    return result
 
 
-# ---------------------------------------------------------------------
-# 4️⃣ Full ARIMAX-integrated pipeline
-# ---------------------------------------------------------------------
-def dynamic_hedging_from_pipeline(
-    *,
-    commodity: str,
-    horizon: int = 8,
-    exposure: float = 1000.0,
-    role: str = "importer",
-) -> Tuple[pd.DataFrame, str]:
-    """
-    Full ARIMAX + risk index integration with multi-horizon hedging.
-    Generates forecasts for several horizons (4, 8, 12 weeks)
-    to build a meaningful return distribution and risk metrics.
-    """
-    price_path = Path("data/silver/market/market_prices.csv")
-    risk_path = Path(f"data/silver/climate_index_{commodity}.csv")
+# =========================================================
+# COMMAND-LINE ENTRYPOINT
+# =========================================================
+if __name__ == "__main__":
+    import argparse
 
-    if not price_path.exists() or not risk_path.exists():
-        raise FileNotFoundError("Required input data not found under data/silver/")
+    parser = argparse.ArgumentParser(description="Generate hedging recommendation from ARIMAX forecast + risk index.")
+    parser.add_argument("--forecast", required=True, help="Path to forecast JSON (e.g. data/gold/soybean_forecast.json)")
+    parser.add_argument("--risk", required=True, help="Path to risk index JSON (e.g. data/gold/soybean_global_index.json)")
+    parser.add_argument("--profile", choices=["conservative", "balanced", "opportunistic"], default="balanced")
+    parser.add_argument("--role", choices=["importer", "exporter"], default="importer")
+    parser.add_argument("--exposure", type=float, default=10000.0)
 
-    price_df = pd.read_csv(price_path)
-    risk_df = pd.read_csv(risk_path)
-    for df in (price_df, risk_df):
-        df["date"] = pd.to_datetime(df["date"])
-        df.sort_values("date", inplace=True)
+    args = parser.parse_args()
 
-    # Forecasts for multiple horizons (4, 8, 12 weeks)
-    fc_df = train_and_forecast(price_df, risk_df, horizons=[28, 56, 84])
-    if fc_df.empty:
-        raise ValueError("Forecast dataframe is empty.")
-
-    # Build aligned series
-    risk_series = pd.Series(
-        risk_df["global_risk_0_100"].iloc[-len(fc_df):].values,
-        index=fc_df["horizon_days"]
-    )
-    forecast_series = pd.Series(fc_df["cum_return"].values, index=fc_df["horizon_days"])
-
-    # Hedge logic
-    hedge_df = dynamic_hedging_strategy(
-        risk_series=risk_series,
-        forecast_series=forecast_series,
-        role=role,
-        exposure=exposure,
+    result = recommend_hedge_from_arimax(
+        forecast_path=args.forecast,
+        risk_index_path=args.risk,
+        profile=args.profile,
+        role=args.role,
+        exposure=args.exposure,
     )
 
-    # Performance metrics
-    perf = evaluate_hedge_performance(
-        portfolio_returns=forecast_series,
-        hedge_returns=forecast_series,
-        hedge_ratio=float(hedge_df["hedge_ratio"].iloc[-1]),
-    )
-
-    # Generate report
-    report = generate_hedge_report(hedge_df, perf)
-
-    # Save CSV and report (simple, comma-separated)
-    out_dir = Path("data/silver")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    csv_path = out_dir / f"hedging_{commodity}.csv"
-    hedge_df.to_csv(csv_path, index_label="Horizon (days)", encoding="utf-8")
-
-    report_path = out_dir / f"hedging_report_{commodity}.txt"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report)
-
-    # Print summary
-    print(f"\n=== Hedging Completed for {commodity.upper()} ===")
-    print(report)
-    print("\n[INFO] Results saved under:")
-    print(f"  - {csv_path}")
-    print(f"  - {report_path}")
-
-    return hedge_df, report
+    print("\n=== Hedging Recommendation ===")
+    print(json.dumps(result, indent=2))
