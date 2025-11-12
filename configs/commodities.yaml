@@ -65,7 +65,32 @@ corn:
     - id: US
       weight: 0.35
       factors:
-        temp_anom: 0.35
-        precip_anom: 0.45
+        temp: 0.35
+        precip: 0.45
         ndvi: 0.1
         enso: 0.1
+        prod: 0.0
+    - id: BR
+      weight: 0.25
+      factors:
+        temp: 0.4
+        precip: 0.4
+        ndvi: 0.1
+        enso: 0.1
+        prod: 0.0
+    - id: CN
+      weight: 0.15
+      factors:
+        temp: 0.35
+        precip: 0.45
+        ndvi: 0.1
+        enso: 0.1
+        prod: 0.0
+    - id: UA
+      weight: 0.25
+      factors:
+        temp: 0.4
+        precip: 0.4
+        ndvi: 0.1
+        enso: 0.1
+        prod: 0.0
