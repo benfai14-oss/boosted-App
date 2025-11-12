@@ -141,3 +141,6 @@ websockets==15.0.1
 wheel==0.45.1
 yfinance==0.2.66
 pyarrow
+reportlab
+yfinance>=0.2.40
+
