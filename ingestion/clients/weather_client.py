@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 """
 Client for downloading and processing weather data (Open-Meteo).
 

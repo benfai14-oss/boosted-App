@@ -1,257 +1,239 @@
+
+from __future__ import annotations
+
 """
-Master pull script (Layer A orchestration).
-
-Single entry point to fetch and persist all upstream datasets:
-- Weather anomalies by region
-- Market prices & realised volatility by commodity
-- Agricultural production / stocks proxies by region
-
-Features:
-- Automatically determines date range (past Monday over the last 15 years)
-- Rescales synthetic market data if unrealistic
-- Merges into unified silver layer
-
 Usage:
     python -m scripts.pull_all --commodity wheat [--force]
 """
 
-from __future__ import annotations
 
+"""
+Pull Layer A data (rolling 15 years) and write Silver CSVs.
+
+What this script does:
+- WEATHER: downloads daily temperature (°C) and precipitation (mm) per region,
+  aggregates to weekly (Friday), then computes z-score anomalies; persists to
+  data/silver/weather/weather_anomalies.csv (incremental by default).
+- MARKET: downloads front futures "Close" weekly (Friday) for supported
+  commodities (via yfinance in MarketClient), computes 30-day realized vol,
+  and persists to data/silver/market/market_prices.csv (incremental).
+- AGRI: placeholder/example supply series; persists to
+  data/silver/agri/agri_supply.csv (incremental).
+
+Key detail: ALL timestamps are normalized to timezone-aware UTC to avoid
+"Cannot compare tz-naive and tz-aware timestamps" errors when merging old+new.
+"""
+
+
+
+import argparse
 import logging
 from pathlib import Path
-from typing import List
-import pandas as pd
-from datetime import datetime, timedelta
-import argparse
+from typing import Iterable, Optional, Tuple
 
+import pandas as pd
+from pandas import DataFrame
+
+# ---- Clients (must exist in your repo) ---------------------------------------
 from ingestion.clients.weather_client import WeatherClient, RegionQuery
 from ingestion.clients.market_client import MarketClient
 from ingestion.clients.agri_client import AgriClient
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Logging
-# ---------------------------------------------------------------------------
-
+# ------------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Static config
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]  # repo root
+SILVER = ROOT / "data" / "silver"
+WEATHER_OUT = SILVER / "weather" / "weather_anomalies.csv"
+MARKET_OUT = SILVER / "market" / "market_prices.csv"
+AGRI_OUT = SILVER / "agri" / "agri_supply.csv"
 
-REGIONS: List[str] = ["FR", "US", "BR", "AR", "CN", "UA"]
-ALL_COMMODITIES: List[str] = ["wheat", "corn", "soybean", "cocoa", "coffee", "sugar"]
+# Ensure folders exist
+for p in [WEATHER_OUT.parent, MARKET_OUT.parent, AGRI_OUT.parent]:
+    p.mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# Date window (15 years rolling, aligned to Monday)
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Time window (rolling 15 years ending today)
+# ------------------------------------------------------------------------------
+TODAY_UTC = pd.Timestamp.utcnow().normalize()  # 00:00 UTC today
+START_DATE = (TODAY_UTC - pd.DateOffset(years=15)).date().isoformat()
+END_DATE = TODAY_UTC.date().isoformat()
 
-TODAY = datetime.today().date()
-# 🕒 align TODAY to the previous Monday
-TODAY = TODAY - timedelta(days=TODAY.weekday())
-START_WINDOW = TODAY - timedelta(days=15 * 365)
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _truncate_future(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
-    """Remove rows beyond today's date (prevents 'future Monday' issue)."""
-    if date_col not in df.columns:
-        return df
-    df[date_col] = pd.to_datetime(df[date_col])
-    return df[df[date_col] <= pd.Timestamp(TODAY)]
+# ------------------------------------------------------------------------------
+# Helpers: UTC date handling + incremental merge
+# ------------------------------------------------------------------------------
+def ensure_utc_datetime(s: pd.Series) -> pd.Series:
+    """
+    Parse any date-like series to timezone-aware UTC datetimes.
+    Handles mixed naive/aware inputs safely.
+    """
+    return pd.to_datetime(s, utc=True, errors="coerce")
 
 
-def incremental_update(existing_df: pd.DataFrame, new_df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
-    """Merge existing and new data, drop duplicates, and trim to 15-year window."""
-    if existing_df.empty:
-        combined = new_df
-    else:
-        combined = pd.concat([existing_df, new_df], ignore_index=True)
+def read_csv_optional(path: Path, date_col: Optional[str] = None) -> Optional[DataFrame]:
+    """
+    Read a CSV if present. If date_col is provided, coerce it to UTC.
+    Returns None if file is missing/empty.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    df = pd.read_csv(path)
+    if date_col and date_col in df.columns:
+        df[date_col] = ensure_utc_datetime(df[date_col])
+    return df
 
-    if date_col not in combined.columns:
-        raise KeyError(f"Expected a '{date_col}' column in the data.")
 
-    combined[date_col] = pd.to_datetime(combined[date_col])
-    combined = combined.drop_duplicates(subset=[date_col] + [c for c in combined.columns if c != date_col])
-    combined = combined.sort_values(date_col)
-    combined = combined[combined[date_col] >= pd.Timestamp(START_WINDOW)]
-    combined = _truncate_future(combined)
+def incremental_update(
+    existing: Optional[DataFrame],
+    new: DataFrame,
+    on: Iterable[str],
+    date_col: str = "date",
+) -> DataFrame:
+    """
+    Merge existing + new rows, normalize dates to UTC, sort by date, and drop dups.
+    Keeps the *last* occurrence per key.
+    """
+    if new is None or new.empty:
+        return existing if existing is not None else pd.DataFrame()
+
+    nw = new.copy()
+    if date_col in nw.columns:
+        nw[date_col] = ensure_utc_datetime(nw[date_col])
+
+    if existing is None or existing.empty:
+        out = nw.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+        return out
+
+    ex = existing.copy()
+    if date_col in ex.columns:
+        ex[date_col] = ensure_utc_datetime(ex[date_col])
+
+    combined = pd.concat([ex, nw], ignore_index=True)
+    combined[date_col] = ensure_utc_datetime(combined[date_col])
+    combined = combined.dropna(subset=[date_col]).sort_values(date_col)
+
+    combined = combined.drop_duplicates(subset=list(on), keep="last").reset_index(drop=True)
     return combined
 
-# ---------------------------------------------------------------------------
-# 1) WEATHER
-# ---------------------------------------------------------------------------
 
-def build_weather_anomalies(*, commodity: str, force: bool = False) -> None:
-    logger.info(f"Building weather anomalies dataset (rolling 15y) for {commodity} ...")
+# ------------------------------------------------------------------------------
+# Build: Weather
+# ------------------------------------------------------------------------------
+def build_weather_anomalies(commodity: str, force: bool = False) -> None:
+    logger.info("Building weather anomalies dataset (rolling 15y) for %s ...", commodity)
 
-    out_dir = Path("data/silver/weather")
-    out_file = out_dir / "weather_anomalies.csv"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not out_file.exists() or force:
-        existing = pd.DataFrame()
-        start_new = START_WINDOW.strftime("%Y-%m-%d")
-    else:
-        existing = pd.read_csv(out_file)
-        last_date = pd.to_datetime(existing["date"]).max() if "date" in existing else None
-        start_new = (last_date + timedelta(days=1)).strftime("%Y-%m-%d") if last_date else START_WINDOW.strftime("%Y-%m-%d")
+    # Regions to query (must match WeatherClient._REGION_COORDS)
+    regions = ["FR", "US", "BR", "AR", "CN", "UA"]
+    queries = [
+        RegionQuery(region_id=r, start=START_DATE, end=END_DATE) for r in regions
+    ]
 
     client = WeatherClient()
-    queries = [RegionQuery(region_id=r, start=start_new, end=TODAY.strftime("%Y-%m-%d")) for r in REGIONS]
-    df_new = client.fetch_weather_anomalies(commodity, queries)
-    if df_new.empty:
-        logger.warning("No new weather data.")
+    df_new = client.fetch_weather_anomalies(commodity=commodity, queries=queries)
+
+    # Normalize date to UTC immediately
+    if "date" in df_new.columns:
+        df_new["date"] = ensure_utc_datetime(df_new["date"])
+
+    if force:
+        out = df_new.sort_values("date").reset_index(drop=True)
+        out.to_csv(WEATHER_OUT, index=False)
+        logger.info("Saved weather anomalies to %s with shape %s", WEATHER_OUT, out.shape)
         return
 
-    updated = incremental_update(existing, df_new)
-    updated.to_csv(out_file, index=False)
-    logger.info(f"Weather anomalies updated → {out_file} (shape={updated.shape})")
+    existing = read_csv_optional(WEATHER_OUT, date_col="date")
+    out = incremental_update(existing, df_new, on=("date", "region_id"), date_col="date")
+    out.to_csv(WEATHER_OUT, index=False)
+    logger.info("Saved weather anomalies to %s with shape %s", WEATHER_OUT, out.shape)
 
-# ---------------------------------------------------------------------------
-# 2) MARKET
-# ---------------------------------------------------------------------------
 
-def build_market_prices(*, commodity: str, force: bool = False) -> None:
-    logger.info(f"Building market prices dataset (rolling 15y) for {commodity} ...")
-
-    out_dir = Path("data/silver/market")
-    out_file = out_dir / "market_prices.csv"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not out_file.exists() or force:
-        existing = pd.DataFrame()
-        start_new = START_WINDOW.strftime("%Y-%m-%d")
-    else:
-        existing = pd.read_csv(out_file)
-        last_date = pd.to_datetime(existing["date"]).max() if "date" in existing else None
-        start_new = (last_date + timedelta(days=1)).strftime("%Y-%m-%d") if last_date else START_WINDOW.strftime("%Y-%m-%d")
+# ------------------------------------------------------------------------------
+# Build: Market
+# ------------------------------------------------------------------------------
+def build_market_prices(commodity: str, force: bool = False) -> None:
+    logger.info("Building market prices dataset (rolling 15y) for %s ...", commodity)
 
     client = MarketClient()
-    try:
-        df_new = client.fetch_prices(commodity, start_new, TODAY.strftime("%Y-%m-%d"))
-    except Exception as exc:
-        logger.error(f"Error fetching prices for {commodity}: {exc}")
+    df_new = client.fetch_prices(commodity=commodity, start=START_DATE, end=END_DATE)
+
+    # Expect columns: date (weekly Friday), commodity, price_spot/price_front_fut, realized_vol_30d, data_source
+    if "date" in df_new.columns:
+        df_new["date"] = ensure_utc_datetime(df_new["date"])
+
+    if force:
+        out = df_new.sort_values("date").reset_index(drop=True)
+        out.to_csv(MARKET_OUT, index=False)
+        logger.info("Saved market prices to %s with shape %s", MARKET_OUT, out.shape)
         return
 
-    if df_new.empty:
-        logger.warning(f"No new market data for {commodity}.")
-        return
+    existing = read_csv_optional(MARKET_OUT, date_col="date")
+    out = incremental_update(existing, df_new, on=("date", "commodity"), date_col="date")
+    out.to_csv(MARKET_OUT, index=False)
+    logger.info("Saved market prices to %s with shape %s", MARKET_OUT, out.shape)
 
-    # ✅ Rescale synthetic price paths if unrealistic
-    p = df_new["price_spot"]
-    if p.max() > 500 or p.mean() > 250:
-        logger.warning(f"⚠️ Detected high synthetic prices for {commodity}, rescaling...")
-        scale = 200 / p.median()
-        for col in ["price_spot", "price_front_fut"]:
-            df_new[col] = df_new[col] * scale
 
-    df_new = df_new.copy()
-    if "commodity" not in df_new.columns:
-        df_new.insert(1, "commodity", commodity)
-
-    updated = incremental_update(existing, df_new)
-    updated.to_csv(out_file, index=False)
-    logger.info(f"Market prices updated → {out_file} (shape={updated.shape})")
-
-# ---------------------------------------------------------------------------
-# 3) AGRI
-# ---------------------------------------------------------------------------
-
-def build_agri_indicators(*, force: bool = False) -> None:
-    logger.info("Building agricultural indicators dataset (rolling 15y)...")
-
-    out_dir = Path("data/silver/agri")
-    out_file = out_dir / "agri_indicators.csv"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not out_file.exists() or force:
-        existing = pd.DataFrame()
-        start_new = START_WINDOW.strftime("%Y-%m-%d")
-    else:
-        existing = pd.read_csv(out_file)
-        last_date = pd.to_datetime(existing["date"]).max() if "date" in existing else None
-        start_new = (last_date + timedelta(days=1)).strftime("%Y-%m-%d") if last_date else START_WINDOW.strftime("%Y-%m-%d")
+# ------------------------------------------------------------------------------
+# Build: Agri (example supply series)
+# ------------------------------------------------------------------------------
+def build_agri_supply(commodity: str, force: bool = False) -> None:
+    logger.info("Building agri supply dataset (rolling 15y) for %s ...", commodity)
 
     client = AgriClient()
-    frames: List[pd.DataFrame] = []
+    df_new = client.fetch_supply(commodity=commodity, start=START_DATE, end=END_DATE)
+    # Expect columns: date, region_id, prod_estimate, stocks
+    if "date" in df_new.columns:
+        df_new["date"] = ensure_utc_datetime(df_new["date"])
 
-    for rid in REGIONS:
-        try:
-            df_new = client.fetch_production_stocks(rid, start_new, TODAY.strftime("%Y-%m-%d"))
-        except Exception as exc:
-            logger.error(f"Error fetching agri data for {rid}: {exc}")
-            continue
-        if df_new.empty:
-            continue
-        df_new["region_id"] = rid
-        frames.append(df_new)
-
-    if not frames:
-        logger.warning("No agricultural data retrieved.")
+    if force:
+        out = df_new.sort_values("date").reset_index(drop=True)
+        out.to_csv(AGRI_OUT, index=False)
+        logger.info("Saved agri supply to %s with shape %s", AGRI_OUT, out.shape)
         return
 
-    new_all = pd.concat(frames, ignore_index=True)
-    updated = incremental_update(existing, new_all)
-    updated.to_csv(out_file, index=False)
-    logger.info(f"Agricultural indicators updated → {out_file} (shape={updated.shape})")
+    existing = read_csv_optional(AGRI_OUT, date_col="date")
+    out = incremental_update(existing, df_new, on=("date", "region_id"), date_col="date")
+    out.to_csv(AGRI_OUT, index=False)
+    logger.info("Saved agri supply to %s with shape %s", AGRI_OUT, out.shape)
 
-# ---------------------------------------------------------------------------
-# 4) MERGE SILVER DATA
-# ---------------------------------------------------------------------------
 
-def merge_silver_data() -> None:
-    base = Path("data/silver")
+# ------------------------------------------------------------------------------
+# CLI
+# ------------------------------------------------------------------------------
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Pull Layer A data (rolling 15 years) and write Silver CSVs."
+    )
+    parser.add_argument(
+        "--commodity",
+        required=True,
+        help="Commodity key supported by clients (e.g., soybean, corn, wheat, coffee, sugar, cocoa).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite outputs instead of incremental merging.",
+    )
+    return parser.parse_args()
 
-    def safe_read(path: Path) -> pd.DataFrame:
-        return pd.read_csv(path) if path.exists() else pd.DataFrame()
 
-    weather = safe_read(base / "weather" / "weather_anomalies.csv")
-    market = safe_read(base / "market" / "market_prices.csv")
-    agri = safe_read(base / "agri" / "agri_indicators.csv")
-
-    if weather.empty and market.empty and agri.empty:
-        print("No data available to merge.")
-        return
-
-    df = weather
-    if not agri.empty:
-        df = df.merge(agri, on=["date", "region_id"], how="outer")
-    if not market.empty:
-        df = df.merge(market, on="date", how="outer")
-
-    df = _truncate_future(df)
-    out_path = base / "silver_data.csv"
-    df.to_csv(out_path, index=False)
-    print(f"Merged silver_data.csv → {out_path} (shape={df.shape})")
-
-# ---------------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description="Rolling 15-year data pull (Layer A).")
-    parser.add_argument("--commodity", type=str, required=True, help="Commodity to pull (e.g., 'wheat')")
-    parser.add_argument("--force", action="store_true", help="Force full refresh from APIs.")
-    args = parser.parse_args()
-
-    if args.commodity not in ALL_COMMODITIES:
-        allowed = ", ".join(ALL_COMMODITIES)
-        raise ValueError(f"Unknown commodity '{args.commodity}'. Allowed: {allowed}")
-
-    logger.info(f"Starting rolling data pull (15 years) for {args.commodity} ...")
+def main() -> None:
+    args = parse_args()
+    logger.info("Starting rolling data pull (15 years) for %s ...", args.commodity)
 
     build_weather_anomalies(commodity=args.commodity, force=args.force)
     build_market_prices(commodity=args.commodity, force=args.force)
-    build_agri_indicators(force=args.force)
-    merge_silver_data()
+    build_agri_supply(commodity=args.commodity, force=args.force)
 
-    logger.info("✅ Full Layer A data pull completed successfully.")
+    logger.info("Done.")
 
 
 if __name__ == "__main__":
