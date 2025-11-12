@@ -189,7 +189,7 @@ def generate_pdf_report_from_arimax(
         styles["BodyJustified"]))
     story.append(Spacer(1, 0.15 * inch))
     if market_plot_path:
-        story.append(Paragraph("Market Prices (Spot & Futures)", styles["ChartTitle"]))
+        story.append(Paragraph("Market Prices", styles["ChartTitle"]))
         story.append(RLImage(market_plot_path, width=5.4 * inch, height=2.4 * inch))
     story.append(Spacer(1, 0.15 * inch))
     story.append(PageBreak())
