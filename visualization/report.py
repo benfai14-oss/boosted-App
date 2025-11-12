@@ -84,7 +84,7 @@ def generate_pdf_report_from_arimax(
         Absolute path of the generated report, or None if ReportLab not installed.
     """
     if A4 is None:
-        print("⚠️ ReportLab not installed — cannot generate PDF.")
+        print("ReportLab not installed — cannot generate PDF.")
         return None
 
     # --- Load inputs ---
@@ -121,9 +121,7 @@ def generate_pdf_report_from_arimax(
     # --- Section 1: Risk Index ---
     story.append(Paragraph("Global Climate Risk Index", styles["Heading2"]))
     story.append(Paragraph(
-        "The global climate risk index captures temperature, precipitation, "
-        "and vegetation anomalies across key producing regions. Values above "
-        "70 indicate elevated risk.", styles["BodyText"]))
+        "The global climate risk index captures weather anomalies across key producing regions.", styles["BodyText"]))
     story.append(RLImage(risk_plot_path, width=5*inch, height=3*inch))
     story.append(Spacer(1, 0.2 * inch))
 
@@ -161,7 +159,7 @@ def generate_pdf_report_from_arimax(
         "any trading or hedging decisions.", styles["Italic"]))
 
     doc.build(story)
-    print(f"[3/3] ✅ PDF report generated: {output_path}")
+    print(f"[3/3] PDF report generated: {output_path}")
 
     # --- Cleanup temp charts ---
     try:
