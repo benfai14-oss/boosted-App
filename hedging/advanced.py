@@ -41,6 +41,7 @@ def recommend_hedge_from_arimax(
     profile: Literal["conservative", "balanced", "opportunistic"] = "balanced",
     role: Literal["importer", "exporter"] = "importer",
     exposure: float = 10000.0,
+    forecast_horizon: int = 8,
 ) -> Dict[str, float]:
     """
     Generate a hedging recommendation using ARIMAX forecast results
@@ -105,20 +106,27 @@ def recommend_hedge_from_arimax(
         f"Role: {role} → use '{instrument}'. Exposure {exposure} → hedge {hedge_notional:.2f} units."
     )
 
+    # --- Full structured output ---
     result = {
-        "hedge_ratio": hedge_ratio,
-        "instrument": instrument,
-        "hedge_notional": hedge_notional,
+        "commodity": forecast_path.split("/")[-1].replace("_forecast.json", ""),
+        "profile": profile,
+        "role": role,
+        "exposure": exposure,
+        "forecast_horizon_weeks": forecast_horizon,
         "scenario": scenario,
-        "risk_score": last_risk,
-        "forecast_price": last_forecast,
+        "risk_score": float(last_risk),
+        "hedge_ratio": float(hedge_ratio),
+        "hedge_notional": float(hedge_notional),
+        "instrument": instrument,
+        "forecast_price": float(last_forecast),
         "summary": " ".join(explanation),
+        "timestamp": pd.Timestamp.utcnow().isoformat(),
     }
 
-    # Optional: save output next to forecast file
+    # --- Save output next to forecast file ---
     out_path = forecast_path.replace("_forecast.json", "_hedge_rec.json")
     with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
+        json.dump(result, f, indent=4)
     print(f"Hedging recommendation saved to {out_path}")
 
     return result
@@ -136,6 +144,7 @@ if __name__ == "__main__":
     parser.add_argument("--profile", choices=["conservative", "balanced", "opportunistic"], default="balanced")
     parser.add_argument("--role", choices=["importer", "exporter"], default="importer")
     parser.add_argument("--exposure", type=float, default=10000.0)
+    parser.add_argument("--horizon", type=int, default=8, help="Forecast horizon in weeks")
 
     args = parser.parse_args()
 
@@ -145,6 +154,7 @@ if __name__ == "__main__":
         profile=args.profile,
         role=args.role,
         exposure=args.exposure,
+        forecast_horizon=args.horizon,
     )
 
     print("\n=== Hedging Recommendation ===")
