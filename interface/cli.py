@@ -8,8 +8,18 @@ Pipeline steps:
 4. Hedging
 5. Report 
 
-This command can be run using 
-python -m interface.cli full-run --commodity (chose) --regions (chose) --start date --end date --profile (chose) --role (importer/exporter) --exposure x
+Usage examples:
+---------------
+Run full pipeline:
+python -m interface.cli full-run --commodity wheat --profile balanced --role importer --exposure 10000
+
+Run separately: 
+python -m interface.cli ingest --commodity wheat --force
+python -m interface.cli climate-index --commodity wheat
+python -m interface.cli market-model --commodity wheat
+python -m interface.cli hedge --commodity wheat --profile balanced --role importer --exposure 10000
+python -m interface.cli report --commodity wheat
+
 """
 
 from __future__ import annotations
@@ -33,15 +43,15 @@ from visualization import report as report_module
 # INGEST
 # =========================================================
 def run_ingest(args: argparse.Namespace) -> None:
-    print(f"[1/5] Ingesting data for {args.commodity}...")
-    subprocess.run([
-        "python", "-m", "scripts.pull_all",
-        "--commodity", args.commodity,
-        "--regions", args.regions,
-        "--start", args.start,
-        "--end", args.end
-    ], check=True)
+    print(f"[1/5] Ingesting data for {args.commodity} (automatic 15-year window)...")
+
+    cmd = ["python", "-m", "scripts.pull_all", "--commodity", args.commodity]
+    if args.force:
+        cmd.append("--force")
+
+    subprocess.run(cmd, check=True)
     print("Ingestion complete.\n")
+
 
 
 # =========================================================
@@ -69,7 +79,6 @@ def run_climate_index(args: argparse.Namespace) -> None:
         silver_df=silver_df, commodity=args.commodity, config=config
     )
 
-    # In case missing data
     df_index = df_index.reset_index()
 
     out_path = Path(f"data/gold/{args.commodity}_global_index.json")
@@ -92,11 +101,9 @@ def run_market_model(args: argparse.Namespace) -> None:
     if not climate_path.exists():
         raise FileNotFoundError(f"Climate index missing: {climate_path}")
 
-    # --- Load data
     market_df = pd.read_csv(market_path)
     climate_df = pd.read_json(climate_path)
 
-    # --- Fix missing 'date' column
     if "date" not in climate_df.columns:
         if climate_df.index.name == "date" or isinstance(climate_df.index, pd.DatetimeIndex):
             climate_df = climate_df.reset_index()
@@ -104,18 +111,20 @@ def run_market_model(args: argparse.Namespace) -> None:
             print("⚠️ No 'date' column in climate index JSON, creating from index...")
             climate_df = climate_df.reset_index().rename(columns={"index": "date"})
 
-    # --- Filter commodity
     if "commodity" in market_df.columns:
         market_df = market_df[market_df["commodity"].str.lower() == args.commodity.lower()]
 
-    # --- Ensure datetime & sort
     for df_name, df in [("market_df", market_df), ("climate_df", climate_df)]:
         if "date" not in df.columns:
             raise KeyError(f"'date' column missing in {df_name} columns: {df.columns.tolist()}")
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df.sort_values("date", inplace=True)
 
-    # --- Merge datasets
+    # ✅ Fix: exclude any data beyond today's date (avoid "next Monday" rows)
+    today_cutoff = pd.Timestamp.today().normalize()
+    market_df = market_df[market_df["date"] <= today_cutoff]
+    climate_df = climate_df[climate_df["date"] <= today_cutoff]
+
     merged = pd.merge(
         market_df,
         climate_df[["date", "global_risk_0_100"]],
@@ -125,13 +134,10 @@ def run_market_model(args: argparse.Namespace) -> None:
     if merged.empty:
         raise ValueError("Merged dataset is empty — check date alignment or commodity name.")
 
-    # --- Compute log returns
     merged["y"] = np.log(merged["price_spot"]).diff()
 
-    # --- Fit ARIMAX
     params = arimax.fit_arimax(merged, p=2, q=2, include_seasonal=True)
 
-    # --- Forecast next steps
     last_price = merged["price_spot"].iloc[-1]
     last_row = merged.iloc[-1]
     risk_future = [r / 100 for r in merged["global_risk_0_100"].tail(10).to_list()]
@@ -143,7 +149,6 @@ def run_market_model(args: argparse.Namespace) -> None:
         horizon=8,
     )
 
-    # --- Save forecast
     dates_future = pd.date_range(start=merged["date"].iloc[-1], periods=9, freq="W")[1:]
     out_df = pd.DataFrame({
         "date": dates_future,
@@ -158,10 +163,9 @@ def run_market_model(args: argparse.Namespace) -> None:
 
 
 # =========================================================
-# HEDGING (ARIMAX + Climate Index)
+# HEDGING
 # =========================================================
 def run_hedge(args: argparse.Namespace) -> dict:
-    """Generate hedging recommendation from ARIMAX forecast + climate index."""
     print(f"[4/5] Running hedging for {args.commodity} ({args.profile}, {args.role})...")
 
     forecast_path = f"data/gold/{args.commodity}_forecast.json"
@@ -213,12 +217,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     # --- Full pipeline ---
     full = sub.add_parser("full-run", help="Run full pipeline end-to-end")
     full.add_argument("--commodity", required=True)
-    full.add_argument("--regions", required=True)
-    full.add_argument("--start", required=True)
-    full.add_argument("--end", required=True)
     full.add_argument("--profile", default="balanced")
     full.add_argument("--role", default="importer")
     full.add_argument("--exposure", type=float, default=10000.0)
+    full.add_argument("--force", action="store_true", help="Force full data reload in ingestion step.")
 
     def full_run(args):
         run_ingest(args)
@@ -240,9 +242,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         p = sub.add_parser(name)
         p.add_argument("--commodity", required=True)
         if name == "ingest":
-            p.add_argument("--regions", required=True)
-            p.add_argument("--start", required=True)
-            p.add_argument("--end", required=True)
+            p.add_argument("--force", action="store_true", help="Force full data reload from APIs.")
         if name in {"hedge", "full-run"}:
             p.add_argument("--profile", default="balanced")
             p.add_argument("--role", default="importer")
