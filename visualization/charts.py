@@ -1,6 +1,5 @@
 """
 Core plotting utilities for the Climate Hedging Project.
-Cleaned version: only includes plots actually used in the ARIMAX + Risk Index pipeline.
 """
 
 import matplotlib.pyplot as plt

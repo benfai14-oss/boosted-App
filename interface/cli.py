@@ -14,7 +14,7 @@ Run full pipeline:
 python -m interface.cli full-run --commodity wheat --profile balanced --role importer --exposure 10000
 
 Run separately: 
-python -m interface.cli ingest --commodity wheat --force
+python -m interface.cli ingest --commodity wheat
 python -m interface.cli climate-index --commodity wheat
 python -m interface.cli market-model --commodity wheat
 python -m interface.cli hedge --commodity wheat --profile balanced --role importer --exposure 10000
@@ -108,7 +108,7 @@ def run_market_model(args: argparse.Namespace) -> None:
         if climate_df.index.name == "date" or isinstance(climate_df.index, pd.DatetimeIndex):
             climate_df = climate_df.reset_index()
         else:
-            print("⚠️ No 'date' column in climate index JSON, creating from index...")
+            print("No 'date' column in climate index JSON, creating from index...")
             climate_df = climate_df.reset_index().rename(columns={"index": "date"})
 
     if "commodity" in market_df.columns:
@@ -120,8 +120,8 @@ def run_market_model(args: argparse.Namespace) -> None:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df.sort_values("date", inplace=True)
 
-    # ✅ Fix: exclude any data beyond today's date (avoid "next Monday" rows)
-    today_cutoff = pd.Timestamp.today().normalize()
+    # Fix: exclude any data beyond today's date (avoid "next Monday" rows)
+    today_cutoff = pd.Timestamp.now(tz="UTC").normalize()
     market_df = market_df[market_df["date"] <= today_cutoff]
     climate_df = climate_df[climate_df["date"] <= today_cutoff]
 
