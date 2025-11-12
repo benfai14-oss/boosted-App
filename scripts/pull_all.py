@@ -1,11 +1,4 @@
-
 from __future__ import annotations
-
-"""
-Usage:
-    python -m scripts.pull_all --commodity wheat [--force]
-"""
-
 
 """
 Pull Layer A data (rolling 15 years) and write Silver CSVs.
@@ -20,8 +13,6 @@ What this script does:
 - AGRI: placeholder/example supply series; persists to
   data/silver/agri/agri_supply.csv (incremental).
 
-Key detail: ALL timestamps are normalized to timezone-aware UTC to avoid
-"Cannot compare tz-naive and tz-aware timestamps" errors when merging old+new.
 """
 
 
@@ -204,6 +195,46 @@ def build_agri_supply(commodity: str, force: bool = False) -> None:
     out.to_csv(AGRI_OUT, index=False)
     logger.info("Saved agri supply to %s with shape %s", AGRI_OUT, out.shape)
 
+# ---------------------------------------------------------------------------
+# Merge Silver Data (final unified dataset)
+# ---------------------------------------------------------------------------
+
+def merge_silver_data() -> None:
+    """
+    Merge weather, market, and agri data into one unified Silver layer.
+    Ensures all date columns are UTC to prevent tz errors.
+    Output: data/silver/silver_data.csv
+    """
+    base = Path("data/silver")
+
+    def safe_read(path: Path, date_col: str = "date") -> pd.DataFrame:
+        if not path.exists():
+            return pd.DataFrame()
+        df = pd.read_csv(path)
+        if date_col in df.columns:
+            df[date_col] = pd.to_datetime(df[date_col], utc=True, errors="coerce")
+        return df
+
+    weather = safe_read(base / "weather" / "weather_anomalies.csv")
+    market = safe_read(base / "market" / "market_prices.csv")
+    agri = safe_read(base / "agri" / "agri_supply.csv")
+
+    if weather.empty and market.empty and agri.empty:
+        print("⚠️ No data available to merge.")
+        return
+
+    merged = weather
+    if not market.empty:
+        merged = pd.merge(merged, market, on="date", how="outer", suffixes=("", "_market"))
+    if not agri.empty:
+        merged = pd.merge(merged, agri, on=["date", "region_id"], how="outer", suffixes=("", "_agri"))
+
+    merged["date"] = pd.to_datetime(merged["date"], utc=True, errors="coerce")
+    merged = merged.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+    out_path = base / "silver_data.csv"
+    merged.to_csv(out_path, index=False)
+    print(f"Merged silver_data.csv → {out_path} (shape={merged.shape})")
 
 # ------------------------------------------------------------------------------
 # CLI
@@ -233,7 +264,11 @@ def main() -> None:
     build_market_prices(commodity=args.commodity, force=args.force)
     build_agri_supply(commodity=args.commodity, force=args.force)
 
-    logger.info("Done.")
+    # Merge final
+    merge_silver_data()
+
+    logger.info("Full Layer A data pull completed successfully.")
+
 
 
 if __name__ == "__main__":
