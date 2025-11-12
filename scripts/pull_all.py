@@ -6,11 +6,13 @@ Single entry point to fetch and persist all upstream datasets:
 - Market prices & realised volatility by commodity
 - Agricultural production / stocks proxies by region
 
-Outputs are written under `data/silver/` and are consumed by
-downstream layers (climate index, models, hedging, visualization).
+Features:
+- Automatically determines date range (past Monday over the last 15 years)
+- Rescales synthetic market data if unrealistic
+- Merges into unified silver layer
 
 Usage:
-    python -m scripts.pull_all
+    python -m scripts.pull_all --commodity wheat [--force]
 """
 
 from __future__ import annotations
@@ -19,9 +21,12 @@ import logging
 from pathlib import Path
 from typing import List
 import pandas as pd
+from datetime import datetime, timedelta
+import argparse
 
-from ingestion.clients import WeatherClient, MarketClient, AgriClient
-from ingestion.clients.weather_client import RegionQuery
+from ingestion.clients.weather_client import WeatherClient, RegionQuery
+from ingestion.clients.market_client import MarketClient
+from ingestion.clients.agri_client import AgriClient
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -34,121 +39,167 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Global config
+# Static config
 # ---------------------------------------------------------------------------
 
 REGIONS: List[str] = ["FR", "US", "BR", "AR", "CN", "UA"]
+ALL_COMMODITIES: List[str] = ["wheat", "corn", "soybean", "cocoa", "coffee", "sugar"]
 
-COMMODITIES: List[str] = [
-    "wheat",
-    "corn",
-    "soybean",
-    "cocoa",
-    "coffee",
-    "sugar",
-]
+# ---------------------------------------------------------------------------
+# Date window (15 years rolling, aligned to Monday)
+# ---------------------------------------------------------------------------
 
-START_DATE = "2010-01-01"
-END_DATE = "2024-12-31"
+TODAY = datetime.today().date()
+# 🕒 align TODAY to the previous Monday
+TODAY = TODAY - timedelta(days=TODAY.weekday())
+START_WINDOW = TODAY - timedelta(days=15 * 365)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _truncate_future(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
+    """Remove rows beyond today's date (prevents 'future Monday' issue)."""
+    if date_col not in df.columns:
+        return df
+    df[date_col] = pd.to_datetime(df[date_col])
+    return df[df[date_col] <= pd.Timestamp(TODAY)]
+
+
+def incremental_update(existing_df: pd.DataFrame, new_df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
+    """Merge existing and new data, drop duplicates, and trim to 15-year window."""
+    if existing_df.empty:
+        combined = new_df
+    else:
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+
+    if date_col not in combined.columns:
+        raise KeyError(f"Expected a '{date_col}' column in the data.")
+
+    combined[date_col] = pd.to_datetime(combined[date_col])
+    combined = combined.drop_duplicates(subset=[date_col] + [c for c in combined.columns if c != date_col])
+    combined = combined.sort_values(date_col)
+    combined = combined[combined[date_col] >= pd.Timestamp(START_WINDOW)]
+    combined = _truncate_future(combined)
+    return combined
 
 # ---------------------------------------------------------------------------
 # 1) WEATHER
 # ---------------------------------------------------------------------------
 
-def build_weather_anomalies() -> None:
-    logger.info("Building weather anomalies dataset...")
-
-    client = WeatherClient()
-    queries = [
-        RegionQuery(region_id=rid, start=START_DATE, end=END_DATE)
-        for rid in REGIONS
-    ]
-
-    df = client.fetch_weather_anomalies(commodity="wheat", queries=queries)
-
-    if df.empty:
-        logger.warning("Weather anomalies dataframe is empty. No file written.")
-        return
+def build_weather_anomalies(*, commodity: str, force: bool = False) -> None:
+    logger.info(f"Building weather anomalies dataset (rolling 15y) for {commodity} ...")
 
     out_dir = Path("data/silver/weather")
-    out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "weather_anomalies.csv"
-    df.to_csv(out_file, index=False)
-    logger.info("Saved weather anomalies to %s with shape %s", out_file, df.shape)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not out_file.exists() or force:
+        existing = pd.DataFrame()
+        start_new = START_WINDOW.strftime("%Y-%m-%d")
+    else:
+        existing = pd.read_csv(out_file)
+        last_date = pd.to_datetime(existing["date"]).max() if "date" in existing else None
+        start_new = (last_date + timedelta(days=1)).strftime("%Y-%m-%d") if last_date else START_WINDOW.strftime("%Y-%m-%d")
+
+    client = WeatherClient()
+    queries = [RegionQuery(region_id=r, start=start_new, end=TODAY.strftime("%Y-%m-%d")) for r in REGIONS]
+    df_new = client.fetch_weather_anomalies(commodity, queries)
+    if df_new.empty:
+        logger.warning("No new weather data.")
+        return
+
+    updated = incremental_update(existing, df_new)
+    updated.to_csv(out_file, index=False)
+    logger.info(f"Weather anomalies updated → {out_file} (shape={updated.shape})")
 
 # ---------------------------------------------------------------------------
 # 2) MARKET
 # ---------------------------------------------------------------------------
 
-def build_market_prices() -> None:
-    logger.info("Building market prices dataset...")
+def build_market_prices(*, commodity: str, force: bool = False) -> None:
+    logger.info(f"Building market prices dataset (rolling 15y) for {commodity} ...")
+
+    out_dir = Path("data/silver/market")
+    out_file = out_dir / "market_prices.csv"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not out_file.exists() or force:
+        existing = pd.DataFrame()
+        start_new = START_WINDOW.strftime("%Y-%m-%d")
+    else:
+        existing = pd.read_csv(out_file)
+        last_date = pd.to_datetime(existing["date"]).max() if "date" in existing else None
+        start_new = (last_date + timedelta(days=1)).strftime("%Y-%m-%d") if last_date else START_WINDOW.strftime("%Y-%m-%d")
 
     client = MarketClient()
-    frames: List[pd.DataFrame] = []
-
-    for com in COMMODITIES:
-        try:
-            df = client.fetch_prices(commodity=com, start=START_DATE, end=END_DATE)
-        except TypeError as exc:
-            logger.error("Error calling fetch_prices for commodity '%s': %s", com, exc)
-            continue
-
-        if df is None or df.empty:
-            logger.warning("No market data for commodity '%s'", com)
-            continue
-
-        df = df.copy()
-        if "commodity" not in df.columns:
-            df.insert(1, "commodity", com)
-        frames.append(df)
-
-    if not frames:
-        logger.warning("No market prices retrieved for any commodity.")
+    try:
+        df_new = client.fetch_prices(commodity, start_new, TODAY.strftime("%Y-%m-%d"))
+    except Exception as exc:
+        logger.error(f"Error fetching prices for {commodity}: {exc}")
         return
 
-    all_prices = pd.concat(frames, axis=0, ignore_index=True)
-    out_dir = Path("data/silver/market")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "market_prices.csv"
-    all_prices.to_csv(out_file, index=False)
-    logger.info("Saved market prices to %s with shape %s", out_file, all_prices.shape)
+    if df_new.empty:
+        logger.warning(f"No new market data for {commodity}.")
+        return
+
+    # ✅ Rescale synthetic price paths if unrealistic
+    p = df_new["price_spot"]
+    if p.max() > 500 or p.mean() > 250:
+        logger.warning(f"⚠️ Detected high synthetic prices for {commodity}, rescaling...")
+        scale = 200 / p.median()
+        for col in ["price_spot", "price_front_fut"]:
+            df_new[col] = df_new[col] * scale
+
+    df_new = df_new.copy()
+    if "commodity" not in df_new.columns:
+        df_new.insert(1, "commodity", commodity)
+
+    updated = incremental_update(existing, df_new)
+    updated.to_csv(out_file, index=False)
+    logger.info(f"Market prices updated → {out_file} (shape={updated.shape})")
 
 # ---------------------------------------------------------------------------
 # 3) AGRI
 # ---------------------------------------------------------------------------
 
-def build_agri_indicators() -> None:
-    logger.info("Building agricultural indicators dataset...")
+def build_agri_indicators(*, force: bool = False) -> None:
+    logger.info("Building agricultural indicators dataset (rolling 15y)...")
+
+    out_dir = Path("data/silver/agri")
+    out_file = out_dir / "agri_indicators.csv"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not out_file.exists() or force:
+        existing = pd.DataFrame()
+        start_new = START_WINDOW.strftime("%Y-%m-%d")
+    else:
+        existing = pd.read_csv(out_file)
+        last_date = pd.to_datetime(existing["date"]).max() if "date" in existing else None
+        start_new = (last_date + timedelta(days=1)).strftime("%Y-%m-%d") if last_date else START_WINDOW.strftime("%Y-%m-%d")
 
     client = AgriClient()
     frames: List[pd.DataFrame] = []
 
     for rid in REGIONS:
         try:
-            df = client.fetch_production_stocks(region_id=rid, start=START_DATE, end=END_DATE)
-        except TypeError as exc:
-            logger.error("Error calling fetch_production_stocks for region '%s': %s", rid, exc)
+            df_new = client.fetch_production_stocks(rid, start_new, TODAY.strftime("%Y-%m-%d"))
+        except Exception as exc:
+            logger.error(f"Error fetching agri data for {rid}: {exc}")
             continue
-
-        if df is None or df.empty:
-            logger.warning("No agri data for region '%s'", rid)
+        if df_new.empty:
             continue
-
-        df = df.copy()
-        if "region_id" not in df.columns:
-            df["region_id"] = rid
-        frames.append(df)
+        df_new["region_id"] = rid
+        frames.append(df_new)
 
     if not frames:
-        logger.warning("No agricultural indicators retrieved for any region.")
+        logger.warning("No agricultural data retrieved.")
         return
 
-    all_agri = pd.concat(frames, axis=0, ignore_index=True)
-    out_dir = Path("data/silver/agri")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "agri_indicators.csv"
-    all_agri.to_csv(out_file, index=False)
-    logger.info("Saved agri indicators to %s with shape %s", out_file, all_agri.shape)
+    new_all = pd.concat(frames, ignore_index=True)
+    updated = incremental_update(existing, new_all)
+    updated.to_csv(out_file, index=False)
+    logger.info(f"Agricultural indicators updated → {out_file} (shape={updated.shape})")
 
 # ---------------------------------------------------------------------------
 # 4) MERGE SILVER DATA
@@ -157,7 +208,7 @@ def build_agri_indicators() -> None:
 def merge_silver_data() -> None:
     base = Path("data/silver")
 
-    def safe_read(path):
+    def safe_read(path: Path) -> pd.DataFrame:
         return pd.read_csv(path) if path.exists() else pd.DataFrame()
 
     weather = safe_read(base / "weather" / "weather_anomalies.csv")
@@ -174,23 +225,34 @@ def merge_silver_data() -> None:
     if not market.empty:
         df = df.merge(market, on="date", how="outer")
 
+    df = _truncate_future(df)
     out_path = base / "silver_data.csv"
     df.to_csv(out_path, index=False)
-    print(f"Merged silver_data.csv created at {out_path} with shape {df.shape}")
+    print(f"Merged silver_data.csv → {out_path} (shape={df.shape})")
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    logger.info("Starting full data pull (Layer A)...")
+def main():
+    parser = argparse.ArgumentParser(description="Rolling 15-year data pull (Layer A).")
+    parser.add_argument("--commodity", type=str, required=True, help="Commodity to pull (e.g., 'wheat')")
+    parser.add_argument("--force", action="store_true", help="Force full refresh from APIs.")
+    args = parser.parse_args()
 
-    build_weather_anomalies()
-    build_market_prices()
-    build_agri_indicators()
+    if args.commodity not in ALL_COMMODITIES:
+        allowed = ", ".join(ALL_COMMODITIES)
+        raise ValueError(f"Unknown commodity '{args.commodity}'. Allowed: {allowed}")
+
+    logger.info(f"Starting rolling data pull (15 years) for {args.commodity} ...")
+
+    build_weather_anomalies(commodity=args.commodity, force=args.force)
+    build_market_prices(commodity=args.commodity, force=args.force)
+    build_agri_indicators(force=args.force)
     merge_silver_data()
 
-    logger.info("Full data pull completed.")
+    logger.info("✅ Full Layer A data pull completed successfully.")
+
 
 if __name__ == "__main__":
     main()
