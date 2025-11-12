@@ -28,17 +28,33 @@ def _save_plot_to_file(fig: plt.Figure, path: str):
     fig.savefig(path, bbox_inches="tight", dpi=200)
     plt.close(fig)
 
-
 def plot_market_prices(df: pd.DataFrame, commodity: str) -> plt.Figure:
-    """Plot spot & futures prices for overview section (no embedded title)."""
+    """Plot a clean single-line market price for the selected commodity."""
     fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(df["date"], df["price_spot"], label="Spot Price", color="#004b87", linewidth=1.8)
-    if "price_front_fut" in df.columns:
-        ax.plot(df["date"], df["price_front_fut"], label="Front Future", color="#999999", linestyle="--")
+
+   
+    if "commodity" in df.columns:
+        df = df[df["commodity"].str.lower() == commodity.lower()].copy()
+
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date", "price_spot"])
+    df = df.sort_values("date").drop_duplicates(subset="date")
+
+    ax.plot(
+        df["date"],
+        df["price_spot"],
+        color="#004b87",
+        linewidth=1.6,
+        label=f"{commodity.capitalize()} Price"
+    )
+
     ax.set_xlabel("Date")
     ax.set_ylabel("Price (USD)")
-    ax.legend()
+    ax.legend(frameon=False)
+    ax.grid(alpha=0.2)
     fig.autofmt_xdate()
+
     return fig
 
 
