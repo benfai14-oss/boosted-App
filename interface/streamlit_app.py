@@ -127,6 +127,7 @@ with left_col:
         # Take the first row as the main recommendation
         row = hedge_df.iloc[0].to_dict()
 
+        # Vertical key/value display
         fields = [
             ("Commodity", "commodity"),
             ("Profile", "profile"),
@@ -134,7 +135,8 @@ with left_col:
             ("Exposure", "exposure"),
             ("Hedge notional", "hedge_notional"),
             ("Instrument", "instrument"),
-            ("Notes", "notes"),
+            ("Maturity", "instrument_maturity"),
+            ("Strike", "instrument_strike"),
         ]
 
         for label, key in fields:
@@ -143,6 +145,13 @@ with left_col:
             c1.write(f"**{label}**")
             c2.write(str(value))
 
+        # Justification paragraph (business explanation)
+        justification = row.get("justification") or row.get("summary")
+        if justification:
+            st.markdown("**Rationale**")
+            st.write(justification)
+
+        # If there are multiple legs, mention it
         if len(hedge_df) > 1:
             st.caption(f"{len(hedge_df)} hedge legs in total (showing primary leg above).")
 
