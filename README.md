@@ -259,6 +259,42 @@ Potential enhancements include:
 
 ⸻
 
-8. License
+8. Disclosure on the Use of Generative AI
 
-MIT License — fully open-source for academic and industrial use.
+This project was developed by our team, who designed the full system architecture, the analytical methods, the choice of models, and the structure of the user interface. All conceptual decisions—including the pipeline design (Ingestion → Climate Index → ARIMAX Modeling → Hedging → Streamlit UI), the data workflow, the mathematical modeling choices, and the hedging logic—were defined and validated by us.
+
+Generative AI was used in a supporting role, not a creative or decision-making one. Its involvement was strictly limited to:
+
+1 - Code drafting assistance
+
+We used an AI coding assistant to help accelerate routine development operations such as writing boilerplate, structuring functions, converting pseudocode into full Python, or generating repetitive code segments.
+All core logic—data ingestion rules, climate index methodology, ARIMAX extensions, and hedging strategy formulation—was conceived, specified, and reviewed by the team.
+
+2 - Code quality audits
+
+The AI was used as an automated reviewer to:
+	•	identify potential bugs or inconsistencies,
+	•	check for edge cases or missing error handling,
+	•	detect unused code, inefficiencies, or structural weaknesses,
+	•	help enforce coherent and readable coding style across modules.
+
+3 - Code refactoring, organization, and clean-up
+
+The assistant facilitated:
+	•	reorganizing files into a cleaner architecture,
+	•	standardizing naming conventions and documentation,
+	•	removing redundant logic,
+	•	improving readability and maintainability.
+
+What AI did not do
+	•	It did not decide the modeling approach.
+	•	It did not choose algorithms, parameters, or statistical techniques.
+	•	It did not define the business logic behind hedging.
+	•	It did not design the dashboard, nor the pipeline structure.
+	•	It did not autonomously write any part of the solution without human supervision and rewriting.
+
+Summary
+
+AI was a productivity and reliability tool, comparable to a smart code editor or automated reviewer, operating strictly under the team’s direction.
+The intellectual design of the project—including concepts, structure, modeling rationale, risk methodology, and business logic—belongs entirely to us.
+
