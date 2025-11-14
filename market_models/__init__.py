@@ -5,7 +5,7 @@ market_models
 This package exposes a set of baseline time series modelling routines
 tailored to agricultural commodities.  It offers functions for
 preparing merged datasets (combining the ``silver`` data and the
-computed global climate risk index), fitting simple ARIMAX‑style
+computed global climate risk index), fitting ARIMAX‑style
 regressions and generating multi‑horizon forecasts.  The goal of
 these models is not to compete with state‑of‑the‑art machine learning
 but to provide interpretable baselines that link climate risk to
